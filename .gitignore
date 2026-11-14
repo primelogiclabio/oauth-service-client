@@ -1,0 +1,25 @@
+# Build output
+target/
+
+# IDE
+*.iml
+.idea/
+.vscode/
+.classpath
+.project
+.settings/
+
+# Secrets and keys: never commit real ones
+.env
+*.env
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+keys/
+
+# Local settings that may hold client secrets or tenant details
+*.local.properties
+CLAUDE.local.md

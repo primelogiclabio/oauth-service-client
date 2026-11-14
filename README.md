@@ -2,20 +2,24 @@
 
 Java library for backend services that call OAuth-protected external APIs (DocuSign, Salesforce, Jira, ...): it gets and caches access tokens per service and tenant and makes the request.
 
-> **Status: planning.** Nothing is usable yet; the plan and design decisions are in [PROGRESS.md](PROGRESS.md).
+> **Status: in progress, not released.** Token requests and the API below work; renewing after a 401 and retries are next. The plan and design decisions are in [PROGRESS.md](PROGRESS.md).
 
-## Planned use
+## Use
 
 ```java
-try (OAuthServiceClient service = ...) {
-    service.initialize(clientInfo);                    // client info for one service and tenant (or global)
-    Response response = service.request(endpoint, payload);   // endpoint is a full URL
+try (OAuthServiceClient service = new OAuthServiceClient()) {
+    service.initialize(clientInfo);                         // client info for one service and tenant (or global)
+    ServiceResponse created = service.post(url, json);      // also get(url), put(url, json), delete(url); url is a full https URL
+    ServiceResponse mine = service.get(myToken, url);       // a token you already have
+    ServiceResponse custom = service.request(ServiceRequest.put(url, json)
+            .header("Accept", "application/json")
+            .scopes("items.write"));                        // scopes for this call
 }
 ```
 
-- The library gets the access token, caches it per service and tenant until shortly before it expires, and makes the request.
-- A caller that already has a token can pass it: `request(token, endpoint, payload)`.
+- The library gets the access token, caches it per service, tenant and scopes until shortly before it expires, and makes the request.
 - Every HTTP answer goes back to the caller, whatever its status; only failures without an answer (connection, timeout, TLS, getting the token) raise exceptions.
+- `service.token()` gives the token itself, for response fields such as Salesforce's `instance_url`.
 
 ## Documentation
 

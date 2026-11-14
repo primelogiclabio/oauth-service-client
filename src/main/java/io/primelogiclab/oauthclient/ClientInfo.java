@@ -307,7 +307,7 @@ public final class ClientInfo {
     }
 
     /** Trimmed scopes without duplicates, in the order given; a blank one or one with spaces goes to {@code problems}. */
-    private static List<String> checkScopes(List<String> scopes, List<String> problems) {
+    static List<String> checkScopes(List<String> scopes, List<String> problems) {
         Set<String> out = new LinkedHashSet<String>();
         for (String s : scopes) {
             String t = Strings.trim(s);

@@ -18,13 +18,14 @@ final class HttpRequest {
     private final boolean resendable;
     private final Duration timeout;
     private final ClientKey clientCertificate;
+    private final int maxResponseBytes;
 
     HttpRequest(String method, String url, Map<String, String> headers, byte[] body) {
-        this(method, url, headers, body, true, null, null);
+        this(method, url, headers, body, true, null, null, 0);
     }
 
     private HttpRequest(String method, String url, Map<String, String> headers, byte[] body, boolean resendable,
-                        Duration timeout, ClientKey clientCertificate) {
+                        Duration timeout, ClientKey clientCertificate, int maxResponseBytes) {
         this.method = method;
         this.url = url;
         this.headers = Collections.unmodifiableMap(new LinkedHashMap<String, String>(headers));
@@ -32,6 +33,7 @@ final class HttpRequest {
         this.resendable = resendable;
         this.timeout = timeout;
         this.clientCertificate = clientCertificate;
+        this.maxResponseBytes = maxResponseBytes;
     }
 
     /**
@@ -40,12 +42,25 @@ final class HttpRequest {
      * that means fixed-length streaming mode, which turns off the JDK's automatic POST retry.
      */
     HttpRequest notResendable() {
-        return new HttpRequest(method, url, headers, body, false, timeout, clientCertificate);
+        return new HttpRequest(method, url, headers, body, false, timeout, clientCertificate, maxResponseBytes);
     }
 
     /** This request presenting {@code certificate} in the TLS handshake (mutual TLS); {@code null} for none. */
     HttpRequest withClientCertificate(ClientKey certificate) {
-        return new HttpRequest(method, url, headers, body, resendable, timeout, certificate);
+        return new HttpRequest(method, url, headers, body, resendable, timeout, certificate, maxResponseBytes);
+    }
+
+    /**
+     * This request accepting a response body of up to {@code bytes}; a larger one fails the request.
+     * 0 means the transport's default.
+     */
+    HttpRequest withMaxResponseBytes(int bytes) {
+        return new HttpRequest(method, url, headers, body, resendable, timeout, clientCertificate, bytes);
+    }
+
+    /** Largest response body accepted, in bytes; 0 for the transport's default. */
+    int getMaxResponseBytes() {
+        return maxResponseBytes;
     }
 
     /** The client certificate for the TLS handshake, or {@code null}. */
@@ -64,7 +79,7 @@ final class HttpRequest {
      * read) within the shorter of this and its own request timeout.
      */
     public HttpRequest withTimeout(Duration timeout) {
-        return new HttpRequest(method, url, headers, body, resendable, timeout, clientCertificate);
+        return new HttpRequest(method, url, headers, body, resendable, timeout, clientCertificate, maxResponseBytes);
     }
 
     /** The time left for this request, or {@code null} to use the transport's own request timeout. */

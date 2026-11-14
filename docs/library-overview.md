@@ -1,6 +1,6 @@
 # oauth-service-client: how the library works
 
-A Java 8+ library for backend services that call OAuth-protected APIs. You describe each service and tenant once in a `ClientInfo`; the library gets the access token, keeps it until shortly before it expires, and (once the public API lands) makes the request.
+A Java 8+ library for backend services that call OAuth-protected APIs. You describe each service and tenant once in a `ClientInfo`; the library gets the access token, keeps it until shortly before it expires, attaches it and makes the request.
 
 3 grants · 5 client authentication methods · 1 runtime dependency (Caffeine 2.9.3) · built and tested on Java 8 and 21
 
@@ -12,6 +12,7 @@ Your backend calls external services such as DocuSign, Salesforce, Jira, Vertex,
 
 - It sends the token request for the configured **grant** (client credentials, JWT bearer or refresh token), with the right **client authentication**.
 - It caches tokens per **service, tenant and scope set** and renews them 5 minutes before they expire, one renewal at a time.
+- It sends your call to the service with the token attached and hands back every answer, whatever its status.
 - It retries only when that is safe, and reports every failure as one exception type with the server's OAuth error.
 
 > **No browser, no `/authorize` call.** All three grants are a single POST to the token endpoint. Where a vendor needs a person's approval first (Jira 3LO apps, DocuSign consent), that happens once, outside the library; the caller then passes the resulting refresh token, or relies on the recorded consent.
@@ -27,8 +28,9 @@ The core is generic: it implements the standards (RFC 6749, 7523, 8705) and hand
 | Token cache | Done | Per (service, tenant, scope set), on Caffeine 2.9.3. |
 | Scopes passed by the app | Done | Replace the `ClientInfo` defaults for that token. |
 | `OAuthServiceException` | Done | Public. |
-| Public API: `initialize`, `request`, `close` | Next | Until then the token code is package-private: an application can build a `ClientInfo` but can't get a token yet. |
-| Outbound requests | Planned | Attach the token, renew once on 401, timeouts and `Retry-After`. |
+| `OAuthServiceClient`, `ServiceRequest`, `ServiceResponse` | Done | Public. `get`, `post`, `put`, `delete`, `request(ServiceRequest)` and `token()`; each call is sent once. |
+| Outbound requests | Next | Renew the token once after a 401, `Retry-After`, retries the caller asks for, settable timeouts. |
+| PATCH | Planned | `HttpURLConnection` can't send it; Salesforce updates use it. |
 | Introspection (RFC 7662) | Planned | For tokens that carry no expiry (Salesforce). `introspectionUrl` can already be set but isn't used yet. |
 | Metadata discovery (RFC 8414) | Planned | An issuer instead of an explicit token URL. |
 | Refresh-token rotation write-back, cool-down after failures, vendor clients | Planned | See [PROGRESS.md](../PROGRESS.md). |
@@ -37,9 +39,9 @@ The core is generic: it implements the standards (RFC 6749, 7523, 8705) and hand
 ## How the pieces fit
 
 ```text
-Your service --(ClientInfo)--> [OAuthServiceClient]  - - - - Bearer token - - - -> [Service API]
-                                 (next: initialize,                                  (planned)
-                                  request, close)
+Your service --(ClientInfo)--> OAuthServiceClient ------- Bearer token, TLS -------> Service API
+                                 initialize, get/post/                           (any answer comes back)
+                                 put/delete, request, token
                                         |
                                         | get(info, scopes)
                                         v
@@ -53,10 +55,12 @@ Your service --(ClientInfo)--> [OAuthServiceClient]  - - - - Bearer token - - - 
                                    (https only, safe retries, deadline)
 ```
 
-Parts in [brackets] are the next items. Everything below `OAuthServiceClient` is package-private, so the public surface stays small.
+Everything below `OAuthServiceClient` is package-private, so the public surface stays small. Service calls go through the same `HttpExecutor` and transport as token requests.
 
 | Class | Visibility | Job |
 |---|---|---|
+| `OAuthServiceClient` | public | The entry point: `initialize`, the calls, `token()`, `close`. |
+| `ServiceRequest`, `ServiceResponse` | public | One call (method, URL, headers, body, scopes or the caller's token) and its answer. |
 | `ClientInfo`, `ClientKey`, `Grant` | public | How to get tokens for one service and tenant; the key or certificate; the grant. |
 | `AccessToken` | public | The token, its type, scope, expiry and every other response field (e.g. Salesforce's `instance_url`). |
 | `OAuthServiceException` | public | Every failure without a usable answer. |
@@ -65,9 +69,34 @@ Parts in [brackets] are the next items. Everything below `OAuthServiceClient` is
 | `JwtAssertion`, `Jws` | package | Signed JWTs for the JWT bearer grant and `private_key_jwt`. |
 | `HttpExecutor`, `UrlConnectionTransport`, `Tls` | package | Retries and the overall deadline; HTTP over the JDK's `HttpURLConnection`; the TLS socket factory for a client certificate. |
 
+## Calling a service
+
+```java
+try (OAuthServiceClient service = new OAuthServiceClient()) {
+    service.initialize(clientInfo);
+    ServiceResponse created = service.post(url, json);   // also get, put, delete
+    ServiceResponse mine = service.get(myToken, url);    // your own token
+    ServiceResponse custom = service.request(ServiceRequest.put(url, xml)
+            .contentType("application/xml")
+            .header("Accept", "application/json")
+            .scopes("items.write"));
+    String instanceUrl = (String) service.token().getField("instance_url");
+}
+```
+
+- **Methods:** GET, HEAD, POST, PUT, DELETE and OPTIONS. PATCH isn't supported yet (`HttpURLConnection` can't send it). GET, HEAD, DELETE and OPTIONS take no body.
+- **Body:** a String goes as UTF-8 with `Content-Type: application/json; charset=UTF-8` unless you set a content type; bytes go as `application/octet-stream`.
+- **Headers:** any valid header except `Authorization` (pass your own token instead) and the ones the JDK sets itself (`Host`, `Content-Length`, `Connection`, ...).
+- **The token:** the library's, from the cache, for the request's scopes or else the `ClientInfo` defaults; or your own, sent as `Bearer` as is, never cached or renewed. A request can't carry both scopes and your own token.
+- **The answer:** every status comes back as a `ServiceResponse`: `getStatus()`, `getHeader(name)`, `getBody()` (text by the Content-Type charset) and `getBodyBytes()` (a PDF arrives intact). Up to 16 MB.
+- **Sent once:** a call isn't retried yet, and a POST is sent in a mode that stops the JDK from silently sending it twice. Redirects aren't followed, so the token never goes to another host.
+- **Checked first:** the URL must be https before any token is fetched; a bad URL or token gives an `IllegalArgumentException` that doesn't repeat the value.
+- **Client certificate:** presented on service calls too whenever the `ClientInfo` has one, for certificate-bound tokens.
+- **Lifetime:** `initialize` can be called again, for example after a secret rotation. Tokens are cached for the whole JVM (per class loader), so they outlive `close()` and instances with the same `ClientInfo` share them. One instance is thread-safe; after `close()` calls throw `IllegalStateException`.
+
 ## One token, step by step
 
-1. The caller asks the cache for a token with a `ClientInfo` and, optionally, its own scopes.
+1. A call on `OAuthServiceClient` (or `token()`) asks the cache for a token with the `ClientInfo` and, optionally, the request's scopes.
 2. The cache works out the scope set (the caller's, else the `ClientInfo` defaults) and looks up (service, tenant, scope set). A token is reused if the settings that shape it still match and it isn't within 5 minutes of expiry.
 3. Otherwise one thread claims the renewal; other threads either keep using the current token if it hasn't expired yet, or wait and share the result.
 4. `TokenClient` builds the form for the grant, adds client authentication, signs any assertion with a fresh `jti`, and attaches the client certificate if one is set.
@@ -189,10 +218,10 @@ ClientInfo graph = ClientInfo.global("graph")
         .signingKey(ClientKey.fromKeyStore(pkcs12, password))
         .build();                                    // no default scopes
 
-cache.get(graph, Arrays.asList("https://graph.microsoft.com/.default"), tokenClient);   // inside the library today
+service.initialize(graph);
+service.request(ServiceRequest.get(usersUrl).scopes("https://graph.microsoft.com/.default"));
+AccessToken token = service.token("https://graph.microsoft.com/.default");   // the same cached token
 ```
-
-The public `request(...)` will take the same optional scopes argument.
 
 ## How expiry is decided
 
@@ -219,16 +248,18 @@ Token requests are resent only when the server certainly didn't process them, be
 | Whole call, all attempts and pauses | 60 s |
 | Retries | 2 (3 attempts) |
 | Token response size | 256 KB |
+| Service response size | 16 MB |
 | Requests in flight per host / worker threads | 32 / 64, per JVM |
 
-A refresh token request is also sent in a mode that stops the JDK from silently resending a POST. Redirects are never followed. These limits are fixed for now; the public API item makes them settings.
+A refresh token request, and every POST to a service, is also sent in a mode that stops the JDK from silently resending it. Redirects are never followed. Service calls aren't retried yet. These limits are fixed for now; the outbound requests item makes them settings.
 
 ## Errors
 
 | Exception | When | Carries |
 |---|---|---|
-| `IllegalArgumentException` | `ClientInfo.build()` finds problems; the app passes a blank scope or one with spaces | Every problem in one message, naming service and tenant |
-| `OAuthServiceException` | No usable token: the server answered with an error, the answer isn't a token, the connection, TLS or deadline failed, the thread was interrupted | `getError()`, `getErrorDescription()`, `getErrorUri()`, `getHttpStatus()` (-1 without an answer); the message starts "Token request for service/tenant failed" |
+| `IllegalArgumentException` | `ClientInfo.build()` finds problems; a blank scope or one with spaces; a `ServiceRequest` with a non-https URL, a refused header, a body on GET, PATCH, or a bad token | Every problem in one message, naming service and tenant; never a URL, header value or token |
+| `IllegalStateException` | A call needs the library's token but `initialize` wasn't called; any call after `close()` | |
+| `OAuthServiceException` | No usable token: the server answered with an error, the answer isn't a token, the connection, TLS or deadline failed, the thread was interrupted. Or a service call got no answer: connection, TLS, timeout, a response over 16 MB | `getError()`, `getErrorDescription()`, `getErrorUri()`, `getHttpStatus()` (-1 without an answer); the message starts "Token request for service/tenant failed" or "Request failed: METHOD url" (query hidden) |
 
 Messages never contain secrets, tokens or assertions. Server text is cleaned of control characters (so it can't forge log lines) and a non-OAuth error body is cut to 500 characters. A response whose `access_token` or `token_type` isn't safe in an HTTP header is rejected.
 
@@ -313,12 +344,13 @@ ClientInfo.global("bank")
 
 - `mvn verify` runs the unit tests on any JDK from 8 up; CI runs them on JDK 8 and 21, on Linux and Windows.
 - `TokenClientTest` sends real HTTPS requests to an in-process stub server that uses the test CA in `src/test/resources/tls`, including a server that requires a client certificate.
+- `OAuthServiceClientTest` makes service calls to the stub server: each method, headers, the token shared by instances, your own token, every status, binary bodies, the size limit, a client certificate; `ServiceRequestTest` checks every rule of a request.
 - `KeycloakTokenTest` sends real token requests to a throwaway Keycloak 26.8.1: secret in a header and in the body, `private_key_jwt` with RSA and EC keys, mutual TLS with a certificate-bound token, the JWT bearer grant and the refresh token grant. The README section "Live check against Keycloak" has the commands.
 - Key tests are checked by mutation: each check breaks one rule in the code (for example, swap Basic and body, drop `x5t`, leave scopes out of the cache key) and confirms a test fails.
 
 ## Planned and out of scope
 
-- **Next:** the public API (`initialize`, `request`, `close`, with optional scopes per request), then outbound requests, tests for them, and the README examples.
+- **Next:** outbound requests (renew once after a 401, `Retry-After`, settings), tests for them against Keycloak, the README examples, PATCH support, then the base release (0.1.0).
 - **After the basics:** refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body), a short cool-down after failed token requests, introspection, metadata discovery, and vendor clients on top of the core.
 - **Unverified:** whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.
 - **Out of scope:** sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.
@@ -344,4 +376,4 @@ ClientInfo.global("bank")
 - [Caffeine](https://github.com/ben-manes/caffeine) 2.9.3 (the last line that runs on Java 8)
 - [Keycloak: JWT Authorization Grant](https://www.keycloak.org/securing-apps/jwt-authorization-grant), used by the live check
 
-*Describes the code as of November 2026: token requests done, public API next.*
+*Describes the code as of November 2026: token requests and the public API done, outbound requests next.*

@@ -137,6 +137,7 @@ main [id]{scroll-margin-top:64px}
       <li><a href="#what-it-does">What it does</a></li>
       <li><a href="#status">What works today</a></li>
       <li><a href="#architecture">How the pieces fit</a></li>
+      <li><a href="#calling">Calling a service</a></li>
       <li><a href="#one-token">One token, step by step</a></li>
       <li><a href="#client-info">ClientInfo settings</a></li>
       <li><a href="#client-auth">Choosing client authentication</a></li>
@@ -158,7 +159,7 @@ main [id]{scroll-margin-top:64px}
     <header class="top">
       <div>
         <h1>oauth-service-client: how the library works</h1>
-        <p class="lede">A Java 8+ library for backend services that call OAuth-protected APIs. You describe each service and tenant once in a <code>ClientInfo</code>; the library gets the access token, keeps it until shortly before it expires, and (once the public API lands) makes the request.</p>
+        <p class="lede">A Java 8+ library for backend services that call OAuth-protected APIs. You describe each service and tenant once in a <code>ClientInfo</code>; the library gets the access token, keeps it until shortly before it expires, attaches it and makes the request.</p>
         <div class="stats">
           <div class="stat"><b>3</b>grants</div>
           <div class="stat"><b>5</b>client authentication methods</div>
@@ -176,6 +177,7 @@ main [id]{scroll-margin-top:64px}
         <ul>
           <li>It sends the token request for the configured <strong>grant</strong> (client credentials, JWT bearer or refresh token), with the right <strong>client authentication</strong>.</li>
           <li>It caches tokens per <strong>service, tenant and scope set</strong> and renews them 5 minutes before they expire, one renewal at a time.</li>
+          <li>It sends your call to the service with the token attached and hands back every answer, whatever its status.</li>
           <li>It retries only when that is safe, and reports every failure as one exception type with the server's OAuth error.</li>
         </ul>
         <div class="callout"><p><strong>No browser, no <code>/authorize</code> call.</strong> All three grants are a single POST to the token endpoint. Where a vendor needs a person's approval first (Jira 3LO apps, DocuSign consent), that happens once, outside the library; the caller then passes the resulting refresh token, or relies on the recorded consent.</p></div>
@@ -192,8 +194,9 @@ main [id]{scroll-margin-top:64px}
             <tr><td>Token cache</td><td><span class="pill ok">Done</span></td><td>Per (service, tenant, scope set), on Caffeine 2.9.3.</td></tr>
             <tr><td>Scopes passed by the app</td><td><span class="pill ok">Done</span></td><td>Replace the <code>ClientInfo</code> defaults for that token.</td></tr>
             <tr><td><code>OAuthServiceException</code></td><td><span class="pill ok">Done</span></td><td>Public.</td></tr>
-            <tr><td>Public API: <code>initialize</code>, <code>request</code>, <code>close</code></td><td><span class="pill todo">Next</span></td><td>Until then the token code is package-private: an application can build a <code>ClientInfo</code> but can't get a token yet.</td></tr>
-            <tr><td>Outbound requests</td><td><span class="pill todo">Planned</span></td><td>Attach the token, renew once on 401, timeouts and <code>Retry-After</code>.</td></tr>
+            <tr><td><code>OAuthServiceClient</code>, <code>ServiceRequest</code>, <code>ServiceResponse</code></td><td><span class="pill ok">Done</span></td><td>Public. <code>get</code>, <code>post</code>, <code>put</code>, <code>delete</code>, <code>request(ServiceRequest)</code> and <code>token()</code>; each call is sent once.</td></tr>
+            <tr><td>Outbound requests</td><td><span class="pill todo">Next</span></td><td>Renew the token once after a 401, <code>Retry-After</code>, retries the caller asks for, settable timeouts.</td></tr>
+            <tr><td>PATCH</td><td><span class="pill todo">Planned</span></td><td><code>HttpURLConnection</code> can't send it; Salesforce updates use it.</td></tr>
             <tr><td>Introspection (RFC 7662)</td><td><span class="pill todo">Planned</span></td><td>For tokens that carry no expiry (Salesforce). <code>introspectionUrl</code> can already be set but isn't used yet.</td></tr>
             <tr><td>Metadata discovery (RFC 8414)</td><td><span class="pill todo">Planned</span></td><td>An issuer instead of an explicit token URL.</td></tr>
             <tr><td>Refresh-token rotation write-back, cool-down after failures, vendor clients</td><td><span class="pill todo">Planned</span></td><td>See <a href="../PROGRESS.md">PROGRESS.md</a>.</td></tr>
@@ -206,19 +209,19 @@ main [id]{scroll-margin-top:64px}
         <h2 id="architecture">How the pieces fit</h2>
         <figure>
           <div class="canvas">
-          <svg class="dg" viewBox="0 0 760 330" role="img" aria-label="Components: the planned service client asks the token cache, which calls the token client on a miss; the token client signs assertions, sends through the retrying executor and the HTTPS transport to the token endpoint. Planned parts are dashed.">
+          <svg class="dg" viewBox="0 0 760 330" role="img" aria-label="Components: the service client asks the token cache for a token and sends the call with it to the service API; on a miss the cache calls the token client, which signs assertions and sends through the retrying executor and the HTTPS transport to the token endpoint.">
             <defs>
               <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
             </defs>
             <rect class="box" x="20" y="20" width="160" height="50" rx="8"/>
             <text class="t" x="100" y="42" text-anchor="middle">Your service</text>
             <text class="s" x="100" y="59" text-anchor="middle">builds ClientInfo</text>
-            <rect class="plan" x="230" y="20" width="200" height="50" rx="8"/>
+            <rect class="box" x="230" y="20" width="200" height="50" rx="8"/>
             <text class="t" x="330" y="42" text-anchor="middle">OAuthServiceClient</text>
-            <text class="s" x="330" y="59" text-anchor="middle">initialize · request · close (next)</text>
-            <rect class="plan" x="560" y="20" width="180" height="50" rx="8"/>
+            <text class="s" x="330" y="59" text-anchor="middle">initialize · get/post/put/delete</text>
+            <rect class="box" x="560" y="20" width="180" height="50" rx="8"/>
             <text class="t" x="650" y="42" text-anchor="middle">Service API</text>
-            <text class="s" x="650" y="59" text-anchor="middle">outbound request (planned)</text>
+            <text class="s" x="650" y="59" text-anchor="middle">any answer comes back</text>
             <rect class="box" x="230" y="110" width="200" height="50" rx="8"/>
             <text class="m" x="330" y="132" text-anchor="middle">TokenCache</text>
             <text class="s" x="330" y="149" text-anchor="middle">per service, tenant, scope set</text>
@@ -237,10 +240,10 @@ main [id]{scroll-margin-top:64px}
             <rect class="box" x="560" y="270" width="180" height="50" rx="8"/>
             <text class="t" x="650" y="292" text-anchor="middle">Token endpoint</text>
             <text class="s" x="650" y="309" text-anchor="middle">the vendor's /token</text>
-            <line class="ln dash" x1="180" y1="45" x2="228" y2="45" marker-end="url(#a1)"/>
-            <line class="ln dash" x1="430" y1="45" x2="558" y2="45" marker-end="url(#a1)"/>
+            <line class="ln" x1="180" y1="45" x2="228" y2="45" marker-end="url(#a1)"/>
+            <line class="ln" x1="430" y1="45" x2="558" y2="45" marker-end="url(#a1)"/>
             <text class="s" x="494" y="38" text-anchor="middle">Bearer token</text>
-            <line class="ln dash" x1="330" y1="70" x2="330" y2="108" marker-end="url(#a1)"/>
+            <line class="ln" x1="330" y1="70" x2="330" y2="108" marker-end="url(#a1)"/>
             <text class="s" x="338" y="93">get(info, scopes)</text>
             <line class="ln" x1="330" y1="160" x2="330" y2="188" marker-end="url(#a1)"/>
             <text class="s" x="338" y="178">on a miss</text>
@@ -251,11 +254,13 @@ main [id]{scroll-margin-top:64px}
             <text class="s" x="494" y="288" text-anchor="middle">POST, TLS</text>
           </svg>
           </div>
-          <figcaption>Solid boxes exist today; dashed ones are the next items. Everything below <code>OAuthServiceClient</code> is package-private, so the public surface stays small.</figcaption>
+          <figcaption>Everything below <code>OAuthServiceClient</code> is package-private, so the public surface stays small. Service calls go through the same executor and transport as token requests.</figcaption>
         </figure>
         <div class="table-wrap"><table>
           <thead><tr><th>Class</th><th>Visibility</th><th>Job</th></tr></thead>
           <tbody>
+            <tr><td><code>OAuthServiceClient</code></td><td>public</td><td>The entry point: <code>initialize</code>, the calls, <code>token()</code>, <code>close</code>.</td></tr>
+            <tr><td><code>ServiceRequest</code>, <code>ServiceResponse</code></td><td>public</td><td>One call (method, URL, headers, body, scopes or the caller's token) and its answer.</td></tr>
             <tr><td><code>ClientInfo</code>, <code>ClientKey</code>, <code>Grant</code></td><td>public</td><td>How to get tokens for one service and tenant; the key or certificate; the grant.</td></tr>
             <tr><td><code>AccessToken</code></td><td>public</td><td>The token, its type, scope, expiry and every other response field (e.g. Salesforce's <code>instance_url</code>).</td></tr>
             <tr><td><code>OAuthServiceException</code></td><td>public</td><td>Every failure without a usable answer.</td></tr>
@@ -267,10 +272,35 @@ main [id]{scroll-margin-top:64px}
         </table></div>
       </section>
 
+      <section aria-labelledby="calling">
+        <h2 id="calling">Calling a service</h2>
+<pre><code>try (OAuthServiceClient service = new OAuthServiceClient()) {
+    service.initialize(clientInfo);
+    ServiceResponse created = service.post(url, json);   // also get, put, delete
+    ServiceResponse mine = service.get(myToken, url);    // your own token
+    ServiceResponse custom = service.request(ServiceRequest.put(url, xml)
+            .contentType("application/xml")
+            .header("Accept", "application/json")
+            .scopes("items.write"));
+    String instanceUrl = (String) service.token().getField("instance_url");
+}</code></pre>
+        <ul>
+          <li><strong>Methods:</strong> GET, HEAD, POST, PUT, DELETE and OPTIONS. PATCH isn't supported yet (<code>HttpURLConnection</code> can't send it). GET, HEAD, DELETE and OPTIONS take no body.</li>
+          <li><strong>Body:</strong> a String goes as UTF-8 with <code>Content-Type: application/json; charset=UTF-8</code> unless you set a content type; bytes go as <code>application/octet-stream</code>.</li>
+          <li><strong>Headers:</strong> any valid header except <code>Authorization</code> (pass your own token instead) and the ones the JDK sets itself (<code>Host</code>, <code>Content-Length</code>, <code>Connection</code>, ...).</li>
+          <li><strong>The token:</strong> the library's, from the cache, for the request's scopes or else the <code>ClientInfo</code> defaults; or your own, sent as <code>Bearer</code> as is, never cached or renewed. A request can't carry both scopes and your own token.</li>
+          <li><strong>The answer:</strong> every status comes back as a <code>ServiceResponse</code>: <code>getStatus()</code>, <code>getHeader(name)</code>, <code>getBody()</code> (text by the Content-Type charset) and <code>getBodyBytes()</code> (a PDF arrives intact). Up to 16 MB.</li>
+          <li><strong>Sent once:</strong> a call isn't retried yet, and a POST is sent in a mode that stops the JDK from silently sending it twice. Redirects aren't followed, so the token never goes to another host.</li>
+          <li><strong>Checked first:</strong> the URL must be https before any token is fetched; a bad URL or token gives an <code>IllegalArgumentException</code> that doesn't repeat the value.</li>
+          <li><strong>Client certificate:</strong> presented on service calls too whenever the <code>ClientInfo</code> has one, for certificate-bound tokens.</li>
+          <li><strong>Lifetime:</strong> <code>initialize</code> can be called again, for example after a secret rotation. Tokens are cached for the whole JVM (per class loader), so they outlive <code>close()</code> and instances with the same <code>ClientInfo</code> share them. One instance is thread-safe; after <code>close()</code> calls throw <code>IllegalStateException</code>.</li>
+        </ul>
+      </section>
+
       <section aria-labelledby="one-token">
         <h2 id="one-token">One token, step by step</h2>
         <ol>
-          <li>The caller asks the cache for a token with a <code>ClientInfo</code> and, optionally, its own scopes.</li>
+          <li>A call on <code>OAuthServiceClient</code> (or <code>token()</code>) asks the cache for a token with the <code>ClientInfo</code> and, optionally, the request's scopes.</li>
           <li>The cache works out the scope set (the caller's, else the <code>ClientInfo</code> defaults) and looks up (service, tenant, scope set). A token is reused if the settings that shape it still match and it isn't within 5 minutes of expiry.</li>
           <li>Otherwise one thread claims the renewal; other threads either keep using the current token if it hasn't expired yet, or wait and share the result.</li>
           <li><code>TokenClient</code> builds the form for the grant, adds client authentication, signs any assertion with a fresh <code>jti</code>, and attaches the client certificate if one is set.</li>
@@ -429,8 +459,9 @@ grant_type=client_credentials&amp;scope=payroll-calculation&amp;audience=verx%3A
         .signingKey(ClientKey.fromKeyStore(pkcs12, password))
         .build();                                    // no default scopes
 
-cache.get(graph, Arrays.asList("https://graph.microsoft.com/.default"), tokenClient);   // inside the library today</code></pre>
-        <p>The public <code>request(...)</code> will take the same optional scopes argument.</p>
+service.initialize(graph);
+service.request(ServiceRequest.get(usersUrl).scopes("https://graph.microsoft.com/.default"));
+AccessToken token = service.token("https://graph.microsoft.com/.default");   // the same cached token</code></pre>
       </section>
 
       <section aria-labelledby="expiry">
@@ -463,10 +494,11 @@ cache.get(graph, Arrays.asList("https://graph.microsoft.com/.default"), tokenCli
             <tr><td>Whole call, all attempts and pauses</td><td>60 s</td></tr>
             <tr><td>Retries</td><td>2 (3 attempts)</td></tr>
             <tr><td>Token response size</td><td>256 KB</td></tr>
+            <tr><td>Service response size</td><td>16 MB</td></tr>
             <tr><td>Requests in flight per host / worker threads</td><td>32 / 64, per JVM</td></tr>
           </tbody>
         </table></div>
-        <p>A refresh token request is also sent in a mode that stops the JDK from silently resending a POST. Redirects are never followed. These limits are fixed for now; the public API item makes them settings.</p>
+        <p>A refresh token request, and every POST to a service, is also sent in a mode that stops the JDK from silently resending it. Redirects are never followed. Service calls aren't retried yet. These limits are fixed for now; the outbound requests item makes them settings.</p>
       </section>
 
       <section aria-labelledby="errors">
@@ -474,8 +506,9 @@ cache.get(graph, Arrays.asList("https://graph.microsoft.com/.default"), tokenCli
         <div class="table-wrap"><table>
           <thead><tr><th>Exception</th><th>When</th><th>Carries</th></tr></thead>
           <tbody>
-            <tr><td><code>IllegalArgumentException</code></td><td><code>ClientInfo.build()</code> finds problems; the app passes a blank scope or one with spaces</td><td>Every problem in one message, naming service and tenant</td></tr>
-            <tr><td><code>OAuthServiceException</code></td><td>No usable token: the server answered with an error, the answer isn't a token, the connection, TLS or deadline failed, the thread was interrupted</td><td><code>getError()</code>, <code>getErrorDescription()</code>, <code>getErrorUri()</code>, <code>getHttpStatus()</code> (-1 without an answer); the message starts "Token request for service/tenant failed"</td></tr>
+            <tr><td><code>IllegalArgumentException</code></td><td><code>ClientInfo.build()</code> finds problems; a blank scope or one with spaces; a <code>ServiceRequest</code> with a non-https URL, a refused header, a body on GET, PATCH, or a bad token</td><td>Every problem in one message, naming service and tenant; never a URL, header value or token</td></tr>
+            <tr><td><code>IllegalStateException</code></td><td>A call needs the library's token but <code>initialize</code> wasn't called; any call after <code>close()</code></td><td></td></tr>
+            <tr><td><code>OAuthServiceException</code></td><td>No usable token: the server answered with an error, the answer isn't a token, the connection, TLS or deadline failed, the thread was interrupted. Or a service call got no answer: connection, TLS, timeout, a response over 16 MB</td><td><code>getError()</code>, <code>getErrorDescription()</code>, <code>getErrorUri()</code>, <code>getHttpStatus()</code> (-1 without an answer); the message starts "Token request for service/tenant failed" or "Request failed: METHOD url" (query hidden)</td></tr>
           </tbody>
         </table></div>
         <p>Messages never contain secrets, tokens or assertions. Server text is cleaned of control characters (so it can't forge log lines) and a non-OAuth error body is cut to 500 characters. A response whose <code>access_token</code> or <code>token_type</code> isn't safe in an HTTP header is rejected.</p>
@@ -561,6 +594,7 @@ ClientInfo.global("bank")
         <ul>
           <li><code>mvn verify</code> runs the unit tests on any JDK from 8 up; CI runs them on JDK 8 and 21, on Linux and Windows.</li>
           <li><code>TokenClientTest</code> sends real HTTPS requests to an in-process stub server that uses the test CA in <code>src/test/resources/tls</code>, including a server that requires a client certificate.</li>
+          <li><code>OAuthServiceClientTest</code> makes service calls to the stub server: each method, headers, the token shared by instances, your own token, every status, binary bodies, the size limit, a client certificate; <code>ServiceRequestTest</code> checks every rule of a request.</li>
           <li><code>KeycloakTokenTest</code> sends real token requests to a throwaway Keycloak 26.8.1: secret in a header and in the body, <code>private_key_jwt</code> with RSA and EC keys, mutual TLS with a certificate-bound token, the JWT bearer grant and the refresh token grant. The README section "Live check against Keycloak" has the commands.</li>
           <li>Key tests are checked by mutation: each check breaks one rule in the code (for example, swap Basic and body, drop <code>x5t</code>, leave scopes out of the cache key) and confirms a test fails.</li>
         </ul>
@@ -569,7 +603,7 @@ ClientInfo.global("bank")
       <section aria-labelledby="limits">
         <h2 id="limits">Planned and out of scope</h2>
         <ul>
-          <li><strong>Next:</strong> the public API (<code>initialize</code>, <code>request</code>, <code>close</code>, with optional scopes per request), then outbound requests, tests for them, and the README examples.</li>
+          <li><strong>Next:</strong> outbound requests (renew once after a 401, <code>Retry-After</code>, settings), tests for them against Keycloak, the README examples, PATCH support, then the base release (0.1.0).</li>
           <li><strong>After the basics:</strong> refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body), a short cool-down after failed token requests, introspection, metadata discovery, and vendor clients on top of the core.</li>
           <li><strong>Unverified:</strong> whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.</li>
           <li><strong>Out of scope:</strong> sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.</li>
@@ -599,7 +633,7 @@ ClientInfo.global("bank")
         </ul>
       </section>
     </main>
-    <footer>Describes the code as of November 2026: token requests done, public API next.</footer>
+    <footer>Describes the code as of November 2026: token requests and the public API done, outbound requests next.</footer>
   </div>
 </div>
 <script data-doc>

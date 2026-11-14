@@ -39,10 +39,14 @@ final class StubServer implements AutoCloseable {
     static final class Response {
         final int status;
         final String contentType;
-        final String body;
+        final byte[] body;
         final Map<String, String> headers = new LinkedHashMap<String, String>();
 
         Response(int status, String contentType, String body) {
+            this(status, contentType, body.getBytes(StandardCharsets.UTF_8));
+        }
+
+        Response(int status, String contentType, byte[] body) {
             this.status = status;
             this.contentType = contentType;
             this.body = body;
@@ -59,14 +63,16 @@ final class StubServer implements AutoCloseable {
         final String path;
         final Map<String, String> headers;
         final String body;
+        final byte[] bodyBytes;
         /** Client certificate presented on the TLS connection, or {@code null}. */
         final X509Certificate clientCertificate;
 
-        Recorded(String method, String path, Map<String, String> headers, String body, X509Certificate clientCertificate) {
+        Recorded(String method, String path, Map<String, String> headers, byte[] body, X509Certificate clientCertificate) {
             this.method = method;
             this.path = path;
             this.headers = headers;
-            this.body = body;
+            this.bodyBytes = body;
+            this.body = new String(body, StandardCharsets.UTF_8);
             this.clientCertificate = clientCertificate;
         }
 
@@ -184,8 +190,10 @@ final class StubServer implements AutoCloseable {
             if (r == null) {
                 r = new Response(404, "text/plain", "not found");
             }
-            byte[] bytes = r.body.getBytes(StandardCharsets.UTF_8);
-            ex.getResponseHeaders().add("Content-Type", r.contentType);
+            byte[] bytes = "HEAD".equals(ex.getRequestMethod()) ? new byte[0] : r.body;
+            if (r.contentType != null) {
+                ex.getResponseHeaders().add("Content-Type", r.contentType);
+            }
             for (Map.Entry<String, String> h : r.headers.entrySet()) {
                 ex.getResponseHeaders().add(h.getKey(), h.getValue());
             }
@@ -200,14 +208,14 @@ final class StubServer implements AutoCloseable {
         }
     }
 
-    private static String read(InputStream in) throws IOException {
+    private static byte[] read(InputStream in) throws IOException {
         ByteArrayOutputStream buf = new ByteArrayOutputStream();
         byte[] b = new byte[4096];
         int n;
         while ((n = in.read(b)) != -1) {
             buf.write(b, 0, n);
         }
-        return new String(buf.toByteArray(), StandardCharsets.UTF_8);
+        return buf.toByteArray();
     }
 
     @Override

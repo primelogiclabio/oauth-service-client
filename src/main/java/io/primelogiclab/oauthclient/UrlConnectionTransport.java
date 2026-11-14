@@ -8,8 +8,6 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.SocketTimeoutException;
 import java.net.URL;
-import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.Callable;
@@ -33,7 +31,8 @@ import javax.net.ssl.TrustManager;
  */
 final class UrlConnectionTransport implements HttpTransport {
 
-    private static final int MAX_BODY_BYTES = 4 * 1024 * 1024;
+    /** Largest response body read when the request sets no limit of its own. */
+    static final int DEFAULT_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
     /**
      * Most requests with a deadline running on worker threads at once in this JVM. Beyond that a
@@ -481,11 +480,12 @@ final class UrlConnectionTransport implements HttpTransport {
         }
         int status = conn.getResponseCode();
         InputStream in = status >= 400 ? conn.getErrorStream() : conn.getInputStream();
-        String text = in == null ? "" : readBody(in, charsetOf(conn.getContentType()), call);
-        return new HttpResponse(status, conn.getHeaderFields(), text);
+        int limit = request.getMaxResponseBytes() > 0 ? request.getMaxResponseBytes() : DEFAULT_MAX_RESPONSE_BYTES;
+        byte[] bytes = in == null ? new byte[0] : readBody(in, limit, call);
+        return new HttpResponse(status, conn.getHeaderFields(), bytes);
     }
 
-    private static String readBody(InputStream in, Charset charset, Call call) throws IOException {
+    private static byte[] readBody(InputStream in, int limit, Call call) throws IOException {
         try {
             ByteArrayOutputStream buf = new ByteArrayOutputStream();
             byte[] chunk = new byte[8192];
@@ -494,31 +494,15 @@ final class UrlConnectionTransport implements HttpTransport {
                 if (call.pastDeadline()) { // a server sending its answer slowly does not keep this thread
                     throw new SocketTimeoutException("Response not complete within the request timeout");
                 }
-                if (buf.size() + n > MAX_BODY_BYTES) {
-                    throw new IOException("Response body exceeds " + MAX_BODY_BYTES + " bytes");
+                if (buf.size() + n > limit) {
+                    throw new IOException("Response body exceeds " + limit + " bytes");
                 }
                 buf.write(chunk, 0, n);
             }
-            return new String(buf.toByteArray(), charset);
+            return buf.toByteArray();
         } finally {
             in.close();
         }
-    }
-
-    private static Charset charsetOf(String contentType) {
-        if (contentType != null) {
-            for (String part : contentType.split(";")) {
-                String p = part.trim();
-                if (p.regionMatches(true, 0, "charset=", 0, 8)) {
-                    try {
-                        return Charset.forName(p.substring(8).replace("\"", "").trim());
-                    } catch (RuntimeException ignored) {
-                        // fall through to UTF-8
-                    }
-                }
-            }
-        }
-        return StandardCharsets.UTF_8;
     }
 
     private static int toMillis(Duration d) {

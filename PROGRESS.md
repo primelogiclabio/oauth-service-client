@@ -3,7 +3,7 @@
 Goal: Java library that makes outbound calls to OAuth-protected external services (DocuSign, Salesforce, Jira, ...) for backend code: the caller passes client info (per service and tenant, or global) and the endpoint and payload; the library gets the token, cached per (service, tenant) until shortly before it expires, and makes the request.
 
 ## Current focus
-- Set up repo: Maven, Java 8 and 21, CI (GitHub repo, license, NOTICE, README stub and .gitignore already done)
+- (none)
 
 ## Next
 - [ ] ClientInfo entity (service, tenant or GLOBAL, token URL, client id/secret or key, scopes/audience, grant, extra attributes) that the caller builds and passes to initialize()
@@ -16,11 +16,12 @@ Goal: Java library that makes outbound calls to OAuth-protected external service
 - [ ] README with DocuSign (per tenant) and Salesforce (global) examples
 
 ## Done (last 10)
-- (none)
+- Set up repo: private GitHub repo, Apache-2.0, Maven build for Java 8 (--release 8 on 9+), CI on JDK 8/21 x Linux/Windows; tests pass locally and in CI (79e60f8)
 
 ## Decisions
 - The library gets the token and makes the outbound request; the caller only supplies client info, endpoint and payload, because config belongs to the service and tenant
 - Service client is AutoCloseable (initialize, request, close), so callers can use try-with-resources
+- Coordinates io.primelogiclab:oauth-service-client, package io.primelogiclab.oauthclient, so it sits next to oauth-connector's io.primelogiclab.oauth without sharing a package
 - endpoint is always a full URL; request(token, endpoint, payload) uses the caller's token as is: no cache, and a 401 goes back to the caller, not renewed
 - request returns every HTTP answer, any status, for the caller to handle; only failures without an answer (connection, timeout, TLS, getting the token) raise exceptions
 - A busy answer (429/503) with Retry-After is retried after that delay (capped); without it, it's returned unless the caller asked for retries

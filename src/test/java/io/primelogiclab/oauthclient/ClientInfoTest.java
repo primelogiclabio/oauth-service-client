@@ -1,0 +1,352 @@
+package io.primelogiclab.oauthclient;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.Arrays;
+import java.util.Collections;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
+
+import io.primelogiclab.oauthclient.ClientInfo.ClientAuthentication;
+
+class ClientInfoTest {
+
+    private static final String TOKEN_URL = "https://idp.example.com/oauth2/token";
+
+    // --- one valid build per kind of service ---
+
+    @Test
+    void docuSignStyleJwtBearerPerTenant() {
+        ClientKey key = Fixtures.rsaKey();
+        ClientInfo info = ClientInfo.forTenant(" docusign ", " acme ")
+                .tokenUrl("https://account-d.docusign.com/oauth/token")
+                .grant(Grant.JWT_BEARER)
+                .clientId("integration-key")
+                .signingKey(key)
+                .subject("user-guid")
+                .assertionAudience("account-d.docusign.com")
+                .scope("signature", "impersonation")
+                .attribute("accountId", "12345")
+                .build();
+        assertEquals("docusign", info.getService());
+        assertEquals("acme", info.getTenant());
+        assertFalse(info.isGlobal());
+        assertEquals(Grant.JWT_BEARER, info.getGrant());
+        assertEquals("urn:ietf:params:oauth:grant-type:jwt-bearer", info.getGrant().getValue());
+        assertSame(key, info.getSigningKey());
+        assertEquals("user-guid", info.getSubject());
+        assertEquals("account-d.docusign.com", info.getAssertionAudience());
+        assertEquals(Arrays.asList("signature", "impersonation"), info.getScopes());
+        assertEquals("12345", info.getAttribute("accountId"));
+        assertNull(info.getAttribute("missing"));
+        assertEquals(ClientAuthentication.NONE, info.clientAuthentication());
+    }
+
+    @Test
+    void salesforceStyleJwtBearerAndClientCredentialsGlobal() {
+        ClientInfo jwt = ClientInfo.global("salesforce")
+                .tokenUrl("https://login.salesforce.com/services/oauth2/token")
+                .grant(Grant.JWT_BEARER)
+                .clientId("consumer-key")
+                .signingKey(Fixtures.rsaKey())
+                .subject("integration@example.com")
+                .assertionAudience("https://login.salesforce.com")
+                .build();
+        assertTrue(jwt.isGlobal());
+        assertNull(jwt.getTenant());
+        assertTrue(jwt.getScopes().isEmpty());
+
+        ClientInfo secret = ClientInfo.global("salesforce")
+                .tokenUrl("https://example.my.salesforce.com/services/oauth2/token")
+                .clientId("consumer-key")
+                .clientSecret("consumer-secret")
+                .build();
+        assertEquals(Grant.CLIENT_CREDENTIALS, secret.getGrant());
+        assertEquals("client_credentials", secret.getGrant().getValue());
+        assertEquals(ClientAuthentication.CLIENT_SECRET, secret.clientAuthentication());
+    }
+
+    @Test
+    void vertexStyleClientCredentialsWithSecret() {
+        ClientInfo info = ClientInfo.forTenant("vertex", "acme")
+                .tokenUrl(TOKEN_URL)
+                .clientId("client")
+                .clientSecret("secret")
+                .tokenParameter("audience", "verx://api")
+                .build();
+        assertEquals("secret", info.getClientSecret());
+        assertEquals(Collections.singletonMap("audience", "verx://api"), info.getTokenParameters());
+        assertEquals(ClientAuthentication.CLIENT_SECRET, info.clientAuthentication());
+    }
+
+    @Test
+    void entraStyleCertificateCredentialIsPrivateKeyJwt() {
+        ClientKey cert = ClientKey.fromKeyStore(Fixtures.pkcs12("client.p12"), Fixtures.PASSWORD);
+        ClientInfo info = ClientInfo.global("graph")
+                .tokenUrl("https://login.microsoftonline.com/directory-id/oauth2/v2.0/token")
+                .clientId("application-id")
+                .signingKey(cert)
+                .scope("https://graph.microsoft.com/.default")
+                .build();
+        assertTrue(info.getSigningKey().hasCertificate());
+        assertNull(info.getAssertionAudience(), "defaults to the token URL in the token request");
+        assertEquals(ClientAuthentication.PRIVATE_KEY_JWT, info.clientAuthentication());
+    }
+
+    @Test
+    void oktaStylePrivateKeyJwtWithKeyId() {
+        ClientInfo info = ClientInfo.forTenant("okta", "acme")
+                .tokenUrl("https://acme.okta.com/oauth2/default/v1/token")
+                .clientId("client")
+                .signingKey(ClientKey.fromPem(Fixtures.text("client.key")).withKeyId("kid-1"))
+                .assertionAudience("https://acme.okta.com/oauth2/default/v1/token")
+                .scope("custom.read")
+                .build();
+        assertEquals("kid-1", info.getSigningKey().getKeyId());
+        assertEquals(ClientAuthentication.PRIVATE_KEY_JWT, info.clientAuthentication());
+    }
+
+    @Test
+    void jiraStyleRefreshTokenWithSecretAndPublicClient() {
+        ClientInfo confidential = ClientInfo.forTenant("jira", "acme")
+                .tokenUrl("https://auth.atlassian.com/oauth/token")
+                .grant(Grant.REFRESH_TOKEN)
+                .clientId("client")
+                .clientSecret("secret")
+                .refreshToken("refresh")
+                .scope("read:jira-work", "offline_access")
+                .build();
+        assertEquals("refresh", confidential.getRefreshToken());
+        assertEquals("refresh_token", confidential.getGrant().getValue());
+        assertEquals(ClientAuthentication.CLIENT_SECRET, confidential.clientAuthentication());
+
+        ClientInfo publicClient = ClientInfo.forTenant("jira", "acme")
+                .tokenUrl(TOKEN_URL).grant(Grant.REFRESH_TOKEN).clientId("client").refreshToken("refresh").build();
+        assertEquals(ClientAuthentication.NONE, publicClient.clientAuthentication());
+    }
+
+    @Test
+    void keycloakStyleMutualTls() {
+        ClientKey cert = Fixtures.selfSignedEc();
+        ClientInfo info = ClientInfo.global("keycloak")
+                .tokenUrl(TOKEN_URL).clientId("client").clientCertificate(cert).build();
+        assertSame(cert, info.getClientCertificate());
+        assertEquals(ClientAuthentication.MUTUAL_TLS, info.clientAuthentication());
+
+        ClientInfo secretAndCert = ClientInfo.global("keycloak")
+                .tokenUrl(TOKEN_URL).clientId("client").clientSecret("secret").clientCertificate(cert).build();
+        assertEquals(ClientAuthentication.CLIENT_SECRET, secretAndCert.clientAuthentication());
+        assertSame(cert, secretAndCert.getClientCertificate(), "still presented for certificate-bound tokens");
+
+        ClientInfo jwtAndSecret = ClientInfo.global("idp")
+                .tokenUrl(TOKEN_URL).grant(Grant.JWT_BEARER).clientId("client").clientSecret("secret")
+                .signingKey(Fixtures.rsaKey()).assertionAudience("idp").build();
+        assertEquals(ClientAuthentication.CLIENT_SECRET, jwtAndSecret.clientAuthentication());
+    }
+
+    // --- validation ---
+
+    @Test
+    void reportsEveryProblemAtOnce() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> ClientInfo.forTenant(" ", null).build());
+        String m = e.getMessage();
+        assertTrue(m.startsWith("Invalid ClientInfo for ?/?: "), m);
+        for (String expected : new String[] {"service is required", "tenant is required", "tokenUrl is required",
+                "clientId is required", "CLIENT_CREDENTIALS needs a clientSecret, signingKey or clientCertificate"}) {
+            assertTrue(m.contains(expected), m);
+        }
+    }
+
+    @Test
+    void messageNamesTheServiceAndTenantOrGlobal() {
+        assertTrue(assertThrows(IllegalArgumentException.class, () -> ClientInfo.forTenant("docusign", "acme").build())
+                .getMessage().startsWith("Invalid ClientInfo for docusign/acme: "));
+        assertTrue(assertThrows(IllegalArgumentException.class, () -> ClientInfo.global("salesforce").build())
+                .getMessage().startsWith("Invalid ClientInfo for salesforce (global): "));
+    }
+
+    @ParameterizedTest
+    @CsvSource(delimiter = '|', value = {
+            "http://idp.example.com/token|must be an https URL",
+            "ftp://idp.example.com/token|must be an https URL",
+            "/oauth/token|must be an https URL",
+            "https://user:pa55word@idp.example.com/token|must not contain user info",
+            "https://idp.example.com\\@evil.example/token|must not contain a backslash",
+            "https://idp.example.com/token#frag|must not have a fragment",
+            "https://idp example.com/token|is not a valid URL",
+            "https:token|must have a host"})
+    void rejectsBadTokenUrls(String url, String problem) {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> secretClient().tokenUrl(url).build());
+        assertTrue(e.getMessage().contains("tokenUrl " + problem), e.getMessage());
+        assertFalse(e.getMessage().contains("pa55word"), e.getMessage());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"https://idp.example.com/token?tenant=acme", "HTTPS://IDP.example.com:8443/token",
+            "https://[::1]/token"})
+    void acceptsHttpsUrlsWithQueryPortOrIpLiteral(String url) {
+        assertEquals(url, secretClient().tokenUrl(url).build().getTokenUrl());
+    }
+
+    @Test
+    void jwtBearerNeedsSigningKeyAndAudience() {
+        String m = assertThrows(IllegalArgumentException.class, () -> ClientInfo.global("idp")
+                .tokenUrl(TOKEN_URL).grant(Grant.JWT_BEARER).clientId("client").build()).getMessage();
+        assertTrue(m.contains("JWT_BEARER needs a signingKey"), m);
+        assertTrue(m.contains("JWT_BEARER needs an assertionAudience"), m);
+    }
+
+    @Test
+    void refreshTokenGrantNeedsRefreshToken() {
+        String m = assertThrows(IllegalArgumentException.class, () -> ClientInfo.global("idp")
+                .tokenUrl(TOKEN_URL).grant(Grant.REFRESH_TOKEN).clientId("client").build()).getMessage();
+        assertTrue(m.contains("REFRESH_TOKEN needs a refreshToken"), m);
+    }
+
+    @Test
+    void rejectsSettingsTheGrantDoesNotUse() {
+        assertProblem(secretClient().signingKey(Fixtures.rsaKey()), "set clientSecret or signingKey, not both");
+        assertProblem(secretClient().grant(Grant.REFRESH_TOKEN).refreshToken("r").signingKey(Fixtures.rsaKey()),
+                "set clientSecret or signingKey, not both");
+        assertProblem(secretClient().subject("user"), "subject is only used with JWT_BEARER");
+        assertProblem(secretClient().assertionAudience("aud"), "assertionAudience is only used with a signingKey");
+        assertProblem(secretClient().refreshToken("r"), "refreshToken is only used with REFRESH_TOKEN");
+        assertProblem(ClientInfo.global("idp").tokenUrl(TOKEN_URL).grant(Grant.JWT_BEARER).clientId("client")
+                .signingKey(Fixtures.rsaKey()).assertionAudience("aud").refreshToken("r"),
+                "refreshToken is only used with REFRESH_TOKEN");
+        assertProblem(secretClient().clientCertificate(Fixtures.rsaKey()),
+                "clientCertificate needs a ClientKey with a certificate");
+        assertProblem(secretClient().grant(null), "grant is required");
+    }
+
+    @Test
+    void rejectsExpiredCertificates() {
+        Clock after = Clock.fixed(Instant.parse("2040-01-01T00:00:00Z"), ZoneOffset.UTC);
+        ClientInfo.Builder mtls = ClientInfo.global("idp").tokenUrl(TOKEN_URL).clientId("client")
+                .clientCertificate(Fixtures.clientWithChain());
+        mtls.build(); // valid today
+        String m = assertThrows(IllegalArgumentException.class, () -> mtls.build(after)).getMessage();
+        assertTrue(m.contains("clientCertificate certificate") && m.contains("CN=test-client") && m.contains("expired on"), m);
+
+        ClientInfo.Builder signing = ClientInfo.global("idp").tokenUrl(TOKEN_URL).clientId("client")
+                .signingKey(Fixtures.clientWithChain());
+        m = assertThrows(IllegalArgumentException.class, () -> signing.build(after)).getMessage();
+        assertTrue(m.contains("signingKey certificate"), m);
+
+        ClientInfo.global("idp").tokenUrl(TOKEN_URL).clientId("client").signingKey(Fixtures.rsaKey()).build(after);
+    }
+
+    @Test
+    void scopesAreTrimmedDeduplicatedAndSingleWords() {
+        ClientInfo info = secretClient().scope(" a ", "b").scope("a", "c").build();
+        assertEquals(Arrays.asList("a", "b", "c"), info.getScopes());
+        assertProblem(secretClient().scope("signature impersonation"),
+                "scope 'signature impersonation' must not contain spaces; pass each scope separately");
+        assertProblem(secretClient().scope("a", " "), "scope must not be blank");
+        assertProblem(secretClient().scope((String[]) null), "scope must not be blank");
+    }
+
+    @Test
+    void tokenParametersRejectReservedNamesAndCanBeReplaced() {
+        assertProblem(secretClient().tokenParameter("grant_type", "x"), "tokenParameter 'grant_type' is set by the library");
+        assertProblem(secretClient().tokenParameter("client_secret", "x"), "tokenParameter 'client_secret' is set by the library");
+        assertProblem(secretClient().tokenParameter("Scope", "x"), "tokenParameter 'Scope' is set by the library; use scope(...)");
+        assertProblem(secretClient().tokenParameter(" ", "x"), "tokenParameter name must not be blank");
+        assertProblem(secretClient().tokenParameter("audience", null), "tokenParameter 'audience' needs a value");
+        ClientInfo info = secretClient().tokenParameter("audience", null).tokenParameter(" audience ", "api").build();
+        assertEquals(Collections.singletonMap("audience", "api"), info.getTokenParameters());
+    }
+
+    @Test
+    void attributesAreCallerDataWithNamesAndValues() {
+        assertProblem(secretClient().attribute(null, "x"), "attribute name must not be blank");
+        assertProblem(secretClient().attribute("accountId", null), "attribute 'accountId' needs a value");
+        ClientInfo info = secretClient().attribute("baseUrl", "https://api.example.com").attribute("baseUrl", "https://eu.example.com")
+                .attribute("grant_type", "fine here: attributes are never sent").build();
+        assertEquals("https://eu.example.com", info.getAttribute("baseUrl"));
+        assertEquals(2, info.getAttributes().size());
+    }
+
+    // --- immutability and logging ---
+
+    @Test
+    void builtInstanceIsImmutableAndIndependentOfTheBuilder() {
+        ClientInfo.Builder b = secretClient().scope("a").tokenParameter("audience", "api").attribute("k", "v");
+        ClientInfo first = b.build();
+        b.scope("b").tokenParameter("resource", "r").attribute("k2", "v2").clientSecret("other");
+        ClientInfo second = b.build();
+
+        assertEquals(Collections.singletonList("a"), first.getScopes());
+        assertEquals(1, first.getTokenParameters().size());
+        assertEquals(1, first.getAttributes().size());
+        assertEquals("secret", first.getClientSecret());
+        assertEquals(Arrays.asList("a", "b"), second.getScopes());
+        assertEquals("other", second.getClientSecret());
+
+        assertThrows(UnsupportedOperationException.class, () -> first.getScopes().add("x"));
+        assertThrows(UnsupportedOperationException.class, () -> first.getTokenParameters().put("x", "y"));
+        assertThrows(UnsupportedOperationException.class, () -> first.getAttributes().clear());
+    }
+
+    @Test
+    void toStringAndErrorsNeverShowSecrets() {
+        ClientKey key = Fixtures.clientWithChain();
+        ClientInfo info = ClientInfo.forTenant("idp", "acme")
+                .tokenUrl("https://idp.example.com/token?sig=query-secret")
+                .grant(Grant.REFRESH_TOKEN)
+                .clientId("client")
+                .clientCertificate(key)
+                .clientSecret("the-client-secret")
+                .refreshToken("the-refresh-token")
+                .tokenParameter("resource", "param-value")
+                .attribute("accountId", "attribute-value")
+                .scope("a")
+                .build();
+        String s = info.toString();
+        assertTrue(s.startsWith("ClientInfo{idp/acme, grant=REFRESH_TOKEN, tokenUrl=https://idp.example.com/token,"), s);
+        assertTrue(s.contains("clientSecret=****") && s.contains("refreshToken=****"), s);
+        assertTrue(s.contains("clientCertificate=ClientKey{RSA key, certificate="), s);
+        assertTrue(s.contains("tokenParameters=[resource]") && s.contains("attributes=[accountId]"), s);
+        for (String hidden : new String[] {"the-client-secret", "the-refresh-token", "query-secret", "param-value",
+                "attribute-value", "PRIVATE KEY"}) {
+            assertFalse(s.contains(hidden), hidden + " in " + s);
+        }
+        assertTrue(secretClient().subject(null).build().toString().contains("ClientInfo{idp (global)"));
+
+        String m = assertThrows(IllegalArgumentException.class, () -> secretClient().clientSecret("the-client-secret")
+                .tokenUrl("http://idp.example.com/token").build()).getMessage();
+        assertFalse(m.contains("the-client-secret"), m);
+    }
+
+    @Test
+    void controlCharactersAreReplacedInToString() {
+        ClientInfo info = ClientInfo.forTenant("idp", "ac\nme").tokenUrl(TOKEN_URL).grant(Grant.JWT_BEARER)
+                .clientId("client\r\nX-Injected: 1").signingKey(Fixtures.rsaKey()).subject("user x")
+                .assertionAudience("aud").build();
+        String s = info.toString();
+        assertFalse(s.contains("\n") || s.contains("\r") || s.contains(" "), s);
+        assertTrue(s.contains("idp/ac?me") && s.contains("subject=user?x"), s);
+    }
+
+    private static ClientInfo.Builder secretClient() {
+        return ClientInfo.global("idp").tokenUrl(TOKEN_URL).clientId("client").clientSecret("secret");
+    }
+
+    private static void assertProblem(ClientInfo.Builder builder, String problem) {
+        String m = assertThrows(IllegalArgumentException.class, builder::build).getMessage();
+        assertTrue(m.contains(problem), m);
+    }
+}

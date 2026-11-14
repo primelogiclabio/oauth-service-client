@@ -29,7 +29,7 @@ import java.util.Set;
  *         .signingKey(ClientKey.fromPem(rsaPrivateKeyPem))
  *         .subject(userId)
  *         .assertionAudience("account-d.docusign.com")
- *         .scope("signature", "impersonation")
+ *         .assertionClaim("scope", "signature impersonation")  // DocuSign wants scopes in the assertion
  *         .attribute("accountId", accountId)
  *         .build();
  *
@@ -43,7 +43,8 @@ import java.util.Set;
  *
  * <p>How the client proves itself to the token endpoint follows from what is set: a {@link #getSigningKey()
  * signing key} (outside the JWT bearer grant) means a {@code private_key_jwt} client assertion, else a
- * {@link #getClientSecret() client secret}, else a {@link #getClientCertificate() client certificate} alone
+ * {@link #getClientSecret() client secret} (in an HTTP Basic header, or in the body when {@link
+ * #isClientSecretInBody() asked}), else a {@link #getClientCertificate() client certificate} alone
  * means mutual TLS (RFC 8705). A client certificate set together with a secret or signing key is still
  * presented in the TLS handshake.
  *
@@ -56,8 +57,10 @@ public final class ClientInfo {
     enum ClientAuthentication {
         /** Only {@code client_id} is sent (public client), or the JWT bearer assertion is the only proof. */
         NONE,
-        /** {@code client_secret}. */
-        CLIENT_SECRET,
+        /** Client ID and secret in an HTTP Basic header ({@code client_secret_basic}, RFC 6749 section 2.3.1). */
+        CLIENT_SECRET_BASIC,
+        /** {@code client_id} and {@code client_secret} in the request body ({@code client_secret_post}). */
+        CLIENT_SECRET_POST,
         /** A JWT client assertion signed with the signing key (RFC 7523 section 2.2). */
         PRIVATE_KEY_JWT,
         /** The client certificate in the TLS handshake (RFC 8705), with {@code client_id} in the body. */
@@ -69,35 +72,46 @@ public final class ClientInfo {
             "grant_type", "client_id", "client_secret", "client_assertion", "client_assertion_type",
             "assertion", "refresh_token", "scope")));
 
+    /** JWT claims the library sets itself; an assertion claim may not override them. */
+    static final Set<String> RESERVED_ASSERTION_CLAIMS = Collections.unmodifiableSet(new HashSet<String>(Arrays.asList(
+            "iss", "sub", "aud", "exp", "iat", "nbf", "jti")));
+
     private final String service;
     private final String tenant;
     private final String tokenUrl;
     private final Grant grant;
     private final String clientId;
     private final String clientSecret;
+    private final boolean clientSecretInBody;
     private final ClientKey signingKey;
     private final ClientKey clientCertificate;
     private final String subject;
     private final String assertionAudience;
+    private final Map<String, String> assertionClaims;
     private final String refreshToken;
     private final List<String> scopes;
     private final Map<String, String> tokenParameters;
+    private final String introspectionUrl;
     private final Map<String, String> attributes;
 
-    private ClientInfo(Builder b, List<String> scopes, Map<String, String> tokenParameters, Map<String, String> attributes) {
+    private ClientInfo(Builder b, List<String> scopes, Map<String, String> assertionClaims,
+                       Map<String, String> tokenParameters, Map<String, String> attributes) {
         this.service = b.service;
         this.tenant = b.global ? null : b.tenant;
         this.tokenUrl = b.tokenUrl;
         this.grant = b.grant;
         this.clientId = b.clientId;
         this.clientSecret = b.clientSecret;
+        this.clientSecretInBody = b.clientSecretInBody;
         this.signingKey = b.signingKey;
         this.clientCertificate = b.clientCertificate;
         this.subject = b.subject;
         this.assertionAudience = b.assertionAudience;
+        this.assertionClaims = assertionClaims;
         this.refreshToken = b.refreshToken;
         this.scopes = scopes;
         this.tokenParameters = tokenParameters;
+        this.introspectionUrl = b.introspectionUrl;
         this.attributes = attributes;
     }
 
@@ -143,6 +157,11 @@ public final class ClientInfo {
         return clientSecret;
     }
 
+    /** True when the client secret goes in the request body instead of an HTTP Basic header. */
+    public boolean isClientSecretInBody() {
+        return clientSecretInBody;
+    }
+
     /** Signs the JWT bearer grant's assertion, or the {@code private_key_jwt} client assertion with other grants; or {@code null}. */
     public ClientKey getSigningKey() {
         return signingKey;
@@ -163,19 +182,53 @@ public final class ClientInfo {
         return assertionAudience;
     }
 
+    /** Extra claims for the JWT the signing key signs, e.g. DocuSign's {@code scope}; unmodifiable. */
+    public Map<String, String> getAssertionClaims() {
+        return assertionClaims;
+    }
+
     /** The refresh token for the refresh token grant, or {@code null}. */
     public String getRefreshToken() {
         return refreshToken;
     }
 
-    /** Requested scopes in the order given, without duplicates; unmodifiable. */
+    /**
+     * The default scopes, in the order given, without duplicates; unmodifiable. Scopes the app passes for
+     * a request replace them for that request.
+     */
     public List<String> getScopes() {
         return scopes;
+    }
+
+    /**
+     * The scopes for one token: {@code requested} when the app passed any, checked like {@link
+     * Builder#scope(String...)} (not blank, no spaces, duplicates dropped, order kept); else {@link #getScopes()}.
+     *
+     * @throws IllegalArgumentException if a requested scope is blank or contains spaces
+     */
+    List<String> effectiveScopes(List<String> requested) {
+        if (requested == null || requested.isEmpty()) {
+            return scopes;
+        }
+        List<String> problems = new ArrayList<String>();
+        List<String> out = checkScopes(requested, problems);
+        if (!problems.isEmpty()) {
+            throw new IllegalArgumentException("Invalid scopes for " + label() + ": " + String.join("; ", problems));
+        }
+        return out;
     }
 
     /** Extra form fields for the token request; unmodifiable. */
     public Map<String, String> getTokenParameters() {
         return tokenParameters;
+    }
+
+    /**
+     * The token introspection endpoint (RFC 7662), asked for the expiry of a token that doesn't carry
+     * one; or {@code null}.
+     */
+    public String getIntrospectionUrl() {
+        return introspectionUrl;
     }
 
     /** The caller's own data, never sent anywhere; unmodifiable. */
@@ -188,12 +241,23 @@ public final class ClientInfo {
         return attributes.get(name);
     }
 
+    /**
+     * The settings that decide what a token grants: a cached token obtained with other values isn't
+     * reused. Credentials are left out, so a rotated secret, key or refresh token keeps the cached token;
+     * the client certificate is in, since a token may be bound to it (RFC 8705).
+     */
+    List<Object> tokenSettings() {
+        return Collections.unmodifiableList(Arrays.<Object>asList(tokenUrl, grant, clientId, subject,
+                assertionAudience, assertionClaims, scopes, tokenParameters,
+                clientCertificate == null ? null : clientCertificate.getCertificateChain().get(0)));
+    }
+
     ClientAuthentication clientAuthentication() {
         if (signingKey != null && grant != Grant.JWT_BEARER) {
             return ClientAuthentication.PRIVATE_KEY_JWT;
         }
         if (clientSecret != null) {
-            return ClientAuthentication.CLIENT_SECRET;
+            return clientSecretInBody ? ClientAuthentication.CLIENT_SECRET_POST : ClientAuthentication.CLIENT_SECRET_BASIC;
         }
         if (clientCertificate != null) {
             return ClientAuthentication.MUTUAL_TLS;
@@ -208,19 +272,25 @@ public final class ClientInfo {
                 + ", grant=" + grant
                 + ", tokenUrl=" + displayUrl(tokenUrl)
                 + ", clientId=" + Strings.safe(clientId)
-                + (clientSecret == null ? "" : ", clientSecret=****")
+                + (clientSecret == null ? "" : ", clientSecret=****" + (clientSecretInBody ? " (in body)" : ""))
                 + (signingKey == null ? "" : ", signingKey=" + signingKey)
                 + (clientCertificate == null ? "" : ", clientCertificate=" + clientCertificate)
                 + (subject == null ? "" : ", subject=" + Strings.safe(subject))
                 + (assertionAudience == null ? "" : ", assertionAudience=" + Strings.safe(assertionAudience))
+                + (assertionClaims.isEmpty() ? "" : ", assertionClaims=" + Strings.safe(assertionClaims.keySet().toString()))
                 + (refreshToken == null ? "" : ", refreshToken=****")
                 + (scopes.isEmpty() ? "" : ", scopes=" + Strings.safe(scopes.toString()))
                 + (tokenParameters.isEmpty() ? "" : ", tokenParameters=" + Strings.safe(tokenParameters.keySet().toString()))
+                + (introspectionUrl == null ? "" : ", introspectionUrl=" + displayUrl(introspectionUrl))
                 + (attributes.isEmpty() ? "" : ", attributes=" + Strings.safe(attributes.keySet().toString()))
                 + '}';
     }
 
-    /** {@code service/tenant} or {@code service (global)}. */
+    /** {@code service/tenant} or {@code service (global)}, safe for logs and messages. */
+    String label() {
+        return label(service, tenant, tenant == null);
+    }
+
     private static String label(String service, String tenant, boolean global) {
         String s = service == null ? "?" : Strings.safe(service);
         return global ? s + " (global)" : s + "/" + (tenant == null ? "?" : Strings.safe(tenant));
@@ -236,8 +306,24 @@ public final class ClientInfo {
         }
     }
 
+    /** Trimmed scopes without duplicates, in the order given; a blank one or one with spaces goes to {@code problems}. */
+    private static List<String> checkScopes(List<String> scopes, List<String> problems) {
+        Set<String> out = new LinkedHashSet<String>();
+        for (String s : scopes) {
+            String t = Strings.trim(s);
+            if (t == null) {
+                problems.add("scope must not be blank");
+            } else if (t.matches(".*\\s.*")) {
+                problems.add("scope '" + Strings.safe(t) + "' must not contain spaces; pass each scope separately");
+            } else {
+                out.add(t);
+            }
+        }
+        return Collections.unmodifiableList(new ArrayList<String>(out));
+    }
+
     /**
-     * Why {@code url} can't be the token URL, or {@code null} if it can: it must parse, be absolute
+     * Why {@code url} can't be the token or introspection URL, or {@code null} if it can: it must parse, be absolute
      * https with a host, and have no user info, backslash (URL parsers disagree about it) or fragment.
      * A query is allowed (RFC 6749 section 3.2).
      */
@@ -284,6 +370,7 @@ public final class ClientInfo {
         private Grant grant = Grant.CLIENT_CREDENTIALS;
         private String clientId;
         private String clientSecret;
+        private boolean clientSecretInBody;
         private ClientKey signingKey;
         private ClientKey clientCertificate;
         private String subject;
@@ -291,7 +378,9 @@ public final class ClientInfo {
         private String refreshToken;
         private final List<String> scopes = new ArrayList<String>();
         // a null key stands for a blank name, reported by build()
+        private final Map<String, String> assertionClaims = new LinkedHashMap<String, String>();
         private final Map<String, String> tokenParameters = new LinkedHashMap<String, String>();
+        private String introspectionUrl;
         private final Map<String, String> attributes = new LinkedHashMap<String, String>();
 
         private Builder(String service, String tenant, boolean global) {
@@ -317,8 +406,19 @@ public final class ClientInfo {
             return this;
         }
 
+        /** Sent in an HTTP Basic header unless {@link #clientSecretInBody(boolean)} says otherwise. */
         public Builder clientSecret(String v) {
             clientSecret = Strings.trim(v);
+            return this;
+        }
+
+        /**
+         * True to send {@code client_id} and {@code client_secret} as form fields ({@code client_secret_post},
+         * e.g. Atlassian) instead of the default HTTP Basic header ({@code client_secret_basic}, the method
+         * every OAuth 2.0 server must support).
+         */
+        public Builder clientSecretInBody(boolean v) {
+            clientSecretInBody = v;
             return this;
         }
 
@@ -353,13 +453,30 @@ public final class ClientInfo {
             return this;
         }
 
+        /**
+         * An extra claim for the JWT the signing key signs, as a string; set again to replace. For services
+         * that want more than the standard claims, e.g. DocuSign's {@code scope} ({@code "signature
+         * impersonation"}). The library sets {@code iss}, {@code sub}, {@code aud}, {@code exp}, {@code iat},
+         * {@code nbf} and {@code jti} itself.
+         */
+        public Builder assertionClaim(String name, String value) {
+            assertionClaims.put(Strings.trim(name), value);
+            return this;
+        }
+
         /** The refresh token for {@link Grant#REFRESH_TOKEN}. */
         public Builder refreshToken(String v) {
             refreshToken = Strings.trim(v);
             return this;
         }
 
-        /** Adds scopes, one per argument (no spaces inside a scope); duplicates are dropped. */
+        /**
+         * Adds default scopes, one per argument (no spaces inside a scope); duplicates are dropped. Sent as
+         * the {@code scope} form field with every grant, unless the app passes its own scopes for a request,
+         * which then replace these; leave them out when only the app knows them. A service that wants scopes
+         * inside the JWT bearer assertion instead (DocuSign) takes {@link #assertionClaim(String, String)
+         * assertionClaim("scope", ...)}.
+         */
         public Builder scope(String... v) {
             if (v == null) {
                 scopes.add(null);
@@ -372,6 +489,17 @@ public final class ClientInfo {
         /** An extra form field for the token request, e.g. {@code audience} or {@code resource}; set again to replace. */
         public Builder tokenParameter(String name, String value) {
             tokenParameters.put(Strings.trim(name), value);
+            return this;
+        }
+
+        /**
+         * The token introspection endpoint (RFC 7662), e.g. Salesforce's {@code /services/oauth2/introspect};
+         * must be https. Asked once per new token when the token says nothing about its expiry (no JWT
+         * {@code exp}, no {@code expires_in}), so the token is renewed before it expires instead of after
+         * the service rejects it. Without it such a token is kept until the service answers 401.
+         */
+        public Builder introspectionUrl(String v) {
+            introspectionUrl = Strings.trim(v);
             return this;
         }
 
@@ -406,14 +534,27 @@ public final class ClientInfo {
             checkGrant(problems);
             checkCertificate("signingKey", signingKey, clock.instant(), problems);
             checkCertificate("clientCertificate", clientCertificate, clock.instant(), problems);
-            List<String> scopeList = checkScopes(problems);
-            Map<String, String> params = toMap("tokenParameter", tokenParameters, true, problems);
-            Map<String, String> attrs = toMap("attribute", attributes, false, problems);
+            if (signingKey != null) {
+                String keyProblem = Jws.signingKeyProblem(signingKey.getPrivateKey());
+                if (keyProblem != null) {
+                    problems.add("signingKey can't sign: " + keyProblem);
+                }
+            }
+            List<String> scopeList = checkScopes(scopes, problems);
+            if (introspectionUrl != null) {
+                String introspectionProblem = urlProblem(introspectionUrl);
+                if (introspectionProblem != null) {
+                    problems.add("introspectionUrl " + introspectionProblem);
+                }
+            }
+            Map<String, String> claims = toMap("assertionClaim", assertionClaims, RESERVED_ASSERTION_CLAIMS, problems);
+            Map<String, String> params = toMap("tokenParameter", tokenParameters, RESERVED_TOKEN_PARAMETERS, problems);
+            Map<String, String> attrs = toMap("attribute", attributes, Collections.<String>emptySet(), problems);
             if (!problems.isEmpty()) {
                 throw new IllegalArgumentException("Invalid ClientInfo for " + label(service, tenant, global) + ": "
                         + String.join("; ", problems));
             }
-            return new ClientInfo(this, scopeList, params, attrs);
+            return new ClientInfo(this, scopeList, claims, params, attrs);
         }
 
         private void checkGrant(List<String> problems) {
@@ -453,6 +594,12 @@ public final class ClientInfo {
             if (!jwtBearer && signingKey == null && assertionAudience != null) {
                 problems.add("assertionAudience is only used with a signingKey");
             }
+            if (signingKey == null && !assertionClaims.isEmpty()) {
+                problems.add("assertionClaim is only used with a signingKey");
+            }
+            if (clientSecretInBody && clientSecret == null) {
+                problems.add("clientSecretInBody is only used with a clientSecret");
+            }
             if (grant != Grant.REFRESH_TOKEN && refreshToken != null) {
                 problems.add("refreshToken is only used with REFRESH_TOKEN");
             }
@@ -472,22 +619,7 @@ public final class ClientInfo {
             }
         }
 
-        private List<String> checkScopes(List<String> problems) {
-            Set<String> out = new LinkedHashSet<String>();
-            for (String s : scopes) {
-                String t = Strings.trim(s);
-                if (t == null) {
-                    problems.add("scope must not be blank");
-                } else if (t.matches(".*\\s.*")) {
-                    problems.add("scope '" + Strings.safe(t) + "' must not contain spaces; pass each scope separately");
-                } else {
-                    out.add(t);
-                }
-            }
-            return Collections.unmodifiableList(new ArrayList<String>(out));
-        }
-
-        private static Map<String, String> toMap(String kind, Map<String, String> entries, boolean tokenParameter,
+        private static Map<String, String> toMap(String kind, Map<String, String> entries, Set<String> reserved,
                                                  List<String> problems) {
             Map<String, String> out = new LinkedHashMap<String, String>();
             for (Map.Entry<String, String> e : entries.entrySet()) {
@@ -496,9 +628,9 @@ public final class ClientInfo {
                     problems.add(kind + " name must not be blank");
                     continue;
                 }
-                if (tokenParameter && RESERVED_TOKEN_PARAMETERS.contains(name.toLowerCase(Locale.ROOT))) {
-                    problems.add(kind + " '" + Strings.safe(name) + "' is set by the library"
-                            + ("scope".equalsIgnoreCase(name) ? "; use scope(...)" : ""));
+                String lower = name.toLowerCase(Locale.ROOT);
+                if (reserved.contains(lower)) {
+                    problems.add(kind + " '" + Strings.safe(name) + "' is set by the library" + useInstead(lower));
                     continue;
                 }
                 if (e.getValue() == null) {
@@ -508,6 +640,20 @@ public final class ClientInfo {
                 out.put(name, e.getValue());
             }
             return Collections.unmodifiableMap(out);
+        }
+
+        /** Points at the builder method for a reserved name that has one. */
+        private static String useInstead(String reservedName) {
+            if ("scope".equals(reservedName)) {
+                return "; use scope(...)";
+            }
+            if ("sub".equals(reservedName)) {
+                return "; use subject(...)";
+            }
+            if ("aud".equals(reservedName)) {
+                return "; use assertionAudience(...)";
+            }
+            return "";
         }
     }
 }

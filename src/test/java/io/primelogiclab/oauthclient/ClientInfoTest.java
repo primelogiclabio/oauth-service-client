@@ -36,7 +36,7 @@ class ClientInfoTest {
                 .signingKey(key)
                 .subject("user-guid")
                 .assertionAudience("account-d.docusign.com")
-                .scope("signature", "impersonation")
+                .assertionClaim(" scope ", "signature impersonation")
                 .attribute("accountId", "12345")
                 .build();
         assertEquals("docusign", info.getService());
@@ -47,7 +47,8 @@ class ClientInfoTest {
         assertSame(key, info.getSigningKey());
         assertEquals("user-guid", info.getSubject());
         assertEquals("account-d.docusign.com", info.getAssertionAudience());
-        assertEquals(Arrays.asList("signature", "impersonation"), info.getScopes());
+        assertEquals(Collections.singletonMap("scope", "signature impersonation"), info.getAssertionClaims());
+        assertTrue(info.getScopes().isEmpty(), "DocuSign takes scopes in the assertion, not the form");
         assertEquals("12345", info.getAttribute("accountId"));
         assertNull(info.getAttribute("missing"));
         assertEquals(ClientAuthentication.NONE, info.clientAuthentication());
@@ -74,20 +75,70 @@ class ClientInfoTest {
                 .build();
         assertEquals(Grant.CLIENT_CREDENTIALS, secret.getGrant());
         assertEquals("client_credentials", secret.getGrant().getValue());
-        assertEquals(ClientAuthentication.CLIENT_SECRET, secret.clientAuthentication());
+        assertFalse(secret.isClientSecretInBody());
+        assertEquals(ClientAuthentication.CLIENT_SECRET_BASIC, secret.clientAuthentication());
     }
 
     @Test
-    void vertexStyleClientCredentialsWithSecret() {
+    void vertexStyleClientCredentialsWithSecretAndAudience() {
         ClientInfo info = ClientInfo.forTenant("vertex", "acme")
-                .tokenUrl(TOKEN_URL)
+                .tokenUrl("https://auth.vertexcloud.com/oauth/token")
                 .clientId("client")
                 .clientSecret("secret")
-                .tokenParameter("audience", "verx://api")
+                .tokenParameter("audience", "verx://migration-api")
+                .scope("payroll-calculation-test")
                 .build();
         assertEquals("secret", info.getClientSecret());
-        assertEquals(Collections.singletonMap("audience", "verx://api"), info.getTokenParameters());
-        assertEquals(ClientAuthentication.CLIENT_SECRET, info.clientAuthentication());
+        assertEquals(Collections.singletonMap("audience", "verx://migration-api"), info.getTokenParameters());
+        assertEquals(ClientAuthentication.CLIENT_SECRET_BASIC, info.clientAuthentication());
+    }
+
+    @Test
+    void auth0StyleClientCredentialsWithAudience() {
+        ClientInfo secret = ClientInfo.forTenant("auth0", "acme")
+                .tokenUrl("https://acme.us.auth0.com/oauth/token")
+                .clientId("client")
+                .clientSecret("secret")
+                .tokenParameter("audience", "https://api.example.com")
+                .build();
+        assertEquals(Collections.singletonMap("audience", "https://api.example.com"), secret.getTokenParameters());
+        assertEquals(ClientAuthentication.CLIENT_SECRET_BASIC, secret.clientAuthentication());
+
+        ClientInfo privateKeyJwt = ClientInfo.forTenant("auth0", "acme")
+                .tokenUrl("https://acme.us.auth0.com/oauth/token")
+                .clientId("client")
+                .signingKey(Fixtures.rsaKey().withKeyId("auth0-kid"))
+                .assertionAudience("https://acme.us.auth0.com/")
+                .tokenParameter("audience", "https://api.example.com")
+                .build();
+        assertEquals("https://acme.us.auth0.com/", privateKeyJwt.getAssertionAudience(), "trailing slash kept");
+        assertEquals(ClientAuthentication.PRIVATE_KEY_JWT, privateKeyJwt.clientAuthentication());
+    }
+
+    @Test
+    void oicStyleClientCredentialsAndUserAssertion() {
+        String scope = "https://abc123.integration.ocp.oraclecloud.com:443urn:opc:resource:consumer::all";
+        ClientInfo secret = ClientInfo.global("oic")
+                .tokenUrl("https://idcs-abc.identity.oraclecloud.com/oauth2/v1/token")
+                .clientId("client")
+                .clientSecret("secret")
+                .scope(scope)
+                .build();
+        assertEquals(Collections.singletonList(scope), secret.getScopes());
+        assertEquals(ClientAuthentication.CLIENT_SECRET_BASIC, secret.clientAuthentication());
+
+        ClientInfo userAssertion = ClientInfo.forTenant("oic", "acme")
+                .tokenUrl("https://idcs-abc.identity.oraclecloud.com/oauth2/v1/token")
+                .grant(Grant.JWT_BEARER)
+                .clientId("client")
+                .clientSecret("secret")
+                .signingKey(Fixtures.rsaKey().withKeyId("cert-alias"))
+                .subject("integration.user")
+                .assertionAudience("https://idcs-abc.identity.oraclecloud.com")
+                .scope(scope)
+                .build();
+        assertEquals(ClientAuthentication.CLIENT_SECRET_BASIC, userAssertion.clientAuthentication(),
+                "the secret authenticates the client; the signing key signs the user assertion");
     }
 
     @Test
@@ -118,7 +169,20 @@ class ClientInfoTest {
     }
 
     @Test
-    void jiraStyleRefreshTokenWithSecretAndPublicClient() {
+    void jiraStyleServiceAccountSendsTheSecretInTheBody() {
+        ClientInfo info = ClientInfo.forTenant("jira", "acme")
+                .tokenUrl("https://auth.atlassian.com/oauth/token")
+                .clientId("client")
+                .clientSecret("secret")
+                .clientSecretInBody(true)
+                .attribute("cloudId", "cloud-id")
+                .build();
+        assertTrue(info.isClientSecretInBody());
+        assertEquals(ClientAuthentication.CLIENT_SECRET_POST, info.clientAuthentication());
+    }
+
+    @Test
+    void refreshTokenWithSecretAndPublicClient() {
         ClientInfo confidential = ClientInfo.forTenant("jira", "acme")
                 .tokenUrl("https://auth.atlassian.com/oauth/token")
                 .grant(Grant.REFRESH_TOKEN)
@@ -129,7 +193,7 @@ class ClientInfoTest {
                 .build();
         assertEquals("refresh", confidential.getRefreshToken());
         assertEquals("refresh_token", confidential.getGrant().getValue());
-        assertEquals(ClientAuthentication.CLIENT_SECRET, confidential.clientAuthentication());
+        assertEquals(ClientAuthentication.CLIENT_SECRET_BASIC, confidential.clientAuthentication());
 
         ClientInfo publicClient = ClientInfo.forTenant("jira", "acme")
                 .tokenUrl(TOKEN_URL).grant(Grant.REFRESH_TOKEN).clientId("client").refreshToken("refresh").build();
@@ -146,13 +210,13 @@ class ClientInfoTest {
 
         ClientInfo secretAndCert = ClientInfo.global("keycloak")
                 .tokenUrl(TOKEN_URL).clientId("client").clientSecret("secret").clientCertificate(cert).build();
-        assertEquals(ClientAuthentication.CLIENT_SECRET, secretAndCert.clientAuthentication());
+        assertEquals(ClientAuthentication.CLIENT_SECRET_BASIC, secretAndCert.clientAuthentication());
         assertSame(cert, secretAndCert.getClientCertificate(), "still presented for certificate-bound tokens");
 
         ClientInfo jwtAndSecret = ClientInfo.global("idp")
                 .tokenUrl(TOKEN_URL).grant(Grant.JWT_BEARER).clientId("client").clientSecret("secret")
-                .signingKey(Fixtures.rsaKey()).assertionAudience("idp").build();
-        assertEquals(ClientAuthentication.CLIENT_SECRET, jwtAndSecret.clientAuthentication());
+                .signingKey(Fixtures.rsaKey()).assertionAudience("idp").clientSecretInBody(true).build();
+        assertEquals(ClientAuthentication.CLIENT_SECRET_POST, jwtAndSecret.clientAuthentication());
     }
 
     // --- validation ---
@@ -230,6 +294,27 @@ class ClientInfoTest {
         assertProblem(secretClient().clientCertificate(Fixtures.rsaKey()),
                 "clientCertificate needs a ClientKey with a certificate");
         assertProblem(secretClient().grant(null), "grant is required");
+        assertProblem(ClientInfo.global("idp").tokenUrl(TOKEN_URL).clientId("client")
+                .clientCertificate(Fixtures.clientWithChain()).clientSecretInBody(true),
+                "clientSecretInBody is only used with a clientSecret");
+        assertProblem(secretClient().assertionClaim("scope", "a b"), "assertionClaim is only used with a signingKey");
+        secretClient().clientSecretInBody(false).build();
+    }
+
+    @Test
+    void assertionClaimsRejectReservedNamesAndCanBeReplaced() {
+        for (String name : new String[] {"iss", "exp", "iat", "nbf", "jti", "JTI"}) {
+            assertProblem(signingClient().assertionClaim(name, "x"), "assertionClaim '" + name + "' is set by the library");
+        }
+        assertProblem(signingClient().assertionClaim("sub", "x"), "assertionClaim 'sub' is set by the library; use subject(...)");
+        assertProblem(signingClient().assertionClaim("aud", "x"),
+                "assertionClaim 'aud' is set by the library; use assertionAudience(...)");
+        assertProblem(signingClient().assertionClaim(" ", "x"), "assertionClaim name must not be blank");
+        assertProblem(signingClient().assertionClaim("scope", null), "assertionClaim 'scope' needs a value");
+        ClientInfo info = signingClient().assertionClaim("scope", "a").assertionClaim(" scope ", "a b")
+                .assertionClaim("grant_type", "fine here: only form fields are reserved for this").build();
+        assertEquals("a b", info.getAssertionClaims().get("scope"));
+        assertEquals(2, info.getAssertionClaims().size());
     }
 
     @Test
@@ -257,6 +342,19 @@ class ClientInfoTest {
                 "scope 'signature impersonation' must not contain spaces; pass each scope separately");
         assertProblem(secretClient().scope("a", " "), "scope must not be blank");
         assertProblem(secretClient().scope((String[]) null), "scope must not be blank");
+    }
+
+    @Test
+    void theAppsScopesReplaceTheDefaultsAndAreCheckedTheSameWay() {
+        ClientInfo info = secretClient().scope("default").build();
+        assertEquals(Arrays.asList("default"), info.effectiveScopes(null));
+        assertEquals(Arrays.asList("default"), info.effectiveScopes(Collections.<String>emptyList()));
+        assertEquals(Arrays.asList("b", "a"), info.effectiveScopes(Arrays.asList(" b ", "a", "b")));
+        assertEquals(Collections.emptyList(), secretClient().build().effectiveScopes(null));
+        String m = assertThrows(IllegalArgumentException.class,
+                () -> info.effectiveScopes(Arrays.asList("a b", " "))).getMessage();
+        assertTrue(m.contains("scope 'a b' must not contain spaces") && m.contains("scope must not be blank"), m);
+        assertThrows(UnsupportedOperationException.class, () -> info.effectiveScopes(Arrays.asList("x")).add("y"));
     }
 
     @Test
@@ -299,6 +397,12 @@ class ClientInfoTest {
         assertThrows(UnsupportedOperationException.class, () -> first.getScopes().add("x"));
         assertThrows(UnsupportedOperationException.class, () -> first.getTokenParameters().put("x", "y"));
         assertThrows(UnsupportedOperationException.class, () -> first.getAttributes().clear());
+
+        ClientInfo.Builder sb = signingClient().assertionClaim("scope", "a");
+        ClientInfo signed = sb.build();
+        sb.assertionClaim("extra", "b");
+        assertEquals(1, signed.getAssertionClaims().size());
+        assertThrows(UnsupportedOperationException.class, () -> signed.getAssertionClaims().put("x", "y"));
     }
 
     @Test
@@ -325,10 +429,53 @@ class ClientInfoTest {
             assertFalse(s.contains(hidden), hidden + " in " + s);
         }
         assertTrue(secretClient().subject(null).build().toString().contains("ClientInfo{idp (global)"));
+        assertTrue(secretClient().clientSecretInBody(true).build().toString().contains("clientSecret=**** (in body)"));
+
+        String signed = signingClient().assertionClaim("scope", "claim-value").build().toString();
+        assertTrue(signed.contains("assertionClaims=[scope]"), signed);
+        assertFalse(signed.contains("claim-value"), signed);
 
         String m = assertThrows(IllegalArgumentException.class, () -> secretClient().clientSecret("the-client-secret")
                 .tokenUrl("http://idp.example.com/token").build()).getMessage();
         assertFalse(m.contains("the-client-secret"), m);
+    }
+
+    @Test
+    void introspectionUrlIsOptionalHttpsAndShownWithoutItsQuery() {
+        assertNull(secretClient().build().getIntrospectionUrl());
+        assertFalse(secretClient().build().toString().contains("introspectionUrl"));
+        ClientInfo info = secretClient().introspectionUrl(" https://acme.my.salesforce.com/services/oauth2/introspect?x=secret ").build();
+        assertEquals("https://acme.my.salesforce.com/services/oauth2/introspect?x=secret", info.getIntrospectionUrl());
+        String s = info.toString();
+        assertTrue(s.contains("introspectionUrl=https://acme.my.salesforce.com/services/oauth2/introspect"), s);
+        assertFalse(s.contains("x=secret"), s);
+        assertProblem(secretClient().introspectionUrl("http://acme.my.salesforce.com/introspect"), "introspectionUrl must be an https URL");
+        assertProblem(secretClient().introspectionUrl("https://user@acme.example.com/introspect"), "introspectionUrl must not contain user info");
+        assertNull(secretClient().introspectionUrl("  ").build().getIntrospectionUrl());
+    }
+
+    @Test
+    void tokenSettingsChangeWithWhatTheTokenGrantsNotWithCredentials() {
+        ClientInfo base = secretClient().scope("a").build();
+        assertEquals(base.tokenSettings(), secretClient().scope("a").build().tokenSettings());
+        assertEquals(base.tokenSettings(), secretClient().scope("a").clientSecret("rotated").build().tokenSettings());
+        assertEquals(base.tokenSettings(), secretClient().scope("a").attribute("note", "x").build().tokenSettings());
+        assertEquals(base.tokenSettings(), secretClient().scope("a").introspectionUrl("https://idp.example.com/introspect").build().tokenSettings());
+        for (ClientInfo.Builder changed : Arrays.asList(
+                secretClient().scope("b"),
+                secretClient().scope("a").tokenUrl("https://other.example.com/token"),
+                secretClient().scope("a").clientId("other"),
+                secretClient().scope("a").tokenParameter("audience", "x"),
+                secretClient().scope("a").clientCertificate(Fixtures.clientWithChain()))) {
+            assertFalse(base.tokenSettings().equals(changed.build().tokenSettings()), changed.build().toString());
+        }
+        ClientInfo signed = signingClient().subject("u1").build();
+        assertEquals(signed.tokenSettings(), signingClient().subject("u1").signingKey(Fixtures.clientWithChain()).build().tokenSettings());
+        assertFalse(signed.tokenSettings().equals(signingClient().subject("u2").build().tokenSettings()));
+        assertFalse(signed.tokenSettings().equals(signingClient().subject("u1").assertionAudience("other").build().tokenSettings()));
+        assertFalse(signed.tokenSettings().equals(signingClient().subject("u1").assertionClaim("scope", "x").build().tokenSettings()));
+        assertFalse(signed.tokenSettings().equals(signingClient().subject("u1").grant(Grant.CLIENT_CREDENTIALS)
+                .subject(null).assertionAudience(null).build().tokenSettings()));
     }
 
     @Test
@@ -343,6 +490,11 @@ class ClientInfoTest {
 
     private static ClientInfo.Builder secretClient() {
         return ClientInfo.global("idp").tokenUrl(TOKEN_URL).clientId("client").clientSecret("secret");
+    }
+
+    private static ClientInfo.Builder signingClient() {
+        return ClientInfo.global("idp").tokenUrl(TOKEN_URL).grant(Grant.JWT_BEARER).clientId("client")
+                .signingKey(Fixtures.rsaKey()).assertionAudience("aud");
     }
 
     private static void assertProblem(ClientInfo.Builder builder, String problem) {

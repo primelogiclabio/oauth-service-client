@@ -1,0 +1,124 @@
+{
+  "realm": "oauth-service-client-it",
+  "enabled": true,
+  "sslRequired": "none",
+  "accessTokenLifespan": 300,
+  "users": [
+    {
+      "username": "jane",
+      "enabled": true,
+      "email": "jane@example.com",
+      "emailVerified": true,
+      "firstName": "Jane",
+      "lastName": "Doe",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "jane-dev-password",
+          "temporary": false
+        }
+      ],
+      "federatedIdentities": [
+        {
+          "identityProvider": "assertion-issuer",
+          "userId": "jane-ext",
+          "userName": "jane"
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "service-client",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "service-dev-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false
+    },
+    {
+      "clientId": "jwt-client",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-jwt",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "attributes": {
+        "use.jwks.url": "false",
+        "jwt.credential.certificate": "MIIDRzCCAi+gAwIBAgIUKKTD5sd92IoA/wm5afBynX3kpGQwDQYJKoZIhvcNAQELBQAwJzElMCMGA1UEAwwcb2F1dGgtc2VydmljZS1jbGllbnQgdGVzdCBDQTAeFw0yNjExMTQwNDE2MjFaFw0zNjExMTEwNDE2MjFaMDsxIzAhBgNVBAoMGm9hdXRoLXNlcnZpY2UtY2xpZW50IHRlc3RzMRQwEgYDVQQDDAt0ZXN0LWNsaWVudDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAMF+GqH5KCLLnjQ9fpOQXlQ8kymOnXx08iSErsfnoRNGUfZlur6CzLyxjTMoerXX2cSBY9ub9gMskX1cqdqSrEKLRvR9PyCH4bdDNHmJnydU5bso26Mf2EH/F4qtBHR+f3z47dtYGrv4nVN54JBYxaoEeOdpKUgE+ZKFLxlhM9/aR9umGE5ZCTFWFtrvknUIlaREnp5kP9nisUFoxCY75wQOBWE9eZPeC2ZrNvYjt1RMEPMsSPYt85cpsb7BaqdBG4QUB7AvZ2q5H4f5N+7g8VqvVMa6R7riKWDILjJGE5KJK69c09nJ1IE7kn7EtyfNrMXuACiSDkiPgEZfBwV16k8CAwEAAaNXMFUwEwYDVR0lBAwwCgYIKwYBBQUHAwIwHQYDVR0OBBYEFEYA0whWVF3CEQmbLQuIBhf5tFo+MB8GA1UdIwQYMBaAFG7fC7uHI+OGju4fe3bGV0d+LgKfMA0GCSqGSIb3DQEBCwUAA4IBAQBJm5PLsS7BxYrulikV+2DmWeGWN7vwOgBE8wOkOrCspt5BXmHFL35KF8X9xaxxz6i8msLHBKG6mcxW5ptwz4cb7JVxf4dX4tvv5+2WITiCnCHpUhpEe8CTNONNABZlKBlDw51Kk57nnDYs0PdAEc66kZkFmPgxbX+kZPvdyQZABqL3wRoXFX2CPic0xT07iIa+5ZTR/JYBjgo6VG/WqUhWSYH/SpfpOY2Cf3swIJKtYXAVdIKumY0erq5w52+6lSJm1/zowsaXT4jBc5tauK2gM44cAmxppFT6AV6sJXGuKKvoQYmPqAYEDvvIRkBPltEb+P9Tu0h1TQc30N7fHz/D"
+      }
+    },
+    {
+      "clientId": "jwt-ec-client",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-jwt",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "attributes": {
+        "use.jwks.url": "false",
+        "jwt.credential.certificate": "MIIBozCCAUqgAwIBAgIUYUQ8I/+NgvK4mhrEp6rk8cOawOIwCgYIKoZIzj0EAwIwHTEbMBkGA1UEAwwSc2VsZi1zaWduZWQtY2xpZW50MB4XDTI2MTExNDA0MTYyMVoXDTM2MTExMTA0MTYyMVowHTEbMBkGA1UEAwwSc2VsZi1zaWduZWQtY2xpZW50MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2VKMJQJxsQfzIiGeIXCzqx/n+0raScVGIWAlN/EPrRaLsJptnCb8IJ78jWS/DxrhXxDZeJoCg0CMH/aeiP/MB6NoMGYwHQYDVR0OBBYEFIBbo/GrXM34FF3pIEozWDuF34CrMB8GA1UdIwQYMBaAFIBbo/GrXM34FF3pIEozWDuF34CrMA8GA1UdEwEB/wQFMAMBAf8wEwYDVR0lBAwwCgYIKwYBBQUHAwIwCgYIKoZIzj0EAwIDRwAwRAIgas/NjCQ8OQ/OM0ByNJZesz6JvCrIgZaHsMRW3mkMOYoCIHAQaLB3Li2IkqKsKlNw/2leDSu/rquB4uZ3P94caBNP"
+      }
+    },
+    {
+      "clientId": "mtls-client",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-x509",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "attributes": {
+        "x509.subjectdn": ".*CN=test-client.*",
+        "x509.allow.regex.pattern.comparison": "true",
+        "tls.client.certificate.bound.access.tokens": "true"
+      }
+    },
+    {
+      "clientId": "password-client",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "password-dev-secret",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true
+    },
+    {
+      "clientId": "https://jwt-bearer-client.example.com",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "jwt-bearer-dev-secret",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "attributes": {
+        "oauth2.jwt.authorization.grant.enabled": "true",
+        "oauth2.jwt.authorization.grant.idp": "assertion-issuer"
+      }
+    }
+  ],
+  "identityProviders": [
+    {
+      "alias": "assertion-issuer",
+      "providerId": "jwt-authorization-grant",
+      "enabled": true,
+      "config": {
+        "issuer": "https://jwt-bearer-client.example.com",
+        "useJwksUrl": "false",
+        "publicKeySignatureVerifier": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwX4aofkoIsueND1+k5BeVDyTKY6dfHTyJISux+ehE0ZR9mW6voLMvLGNMyh6tdfZxIFj25v2AyyRfVyp2pKsQotG9H0/IIfht0M0eYmfJ1Tluyjbox/YQf8Xiq0EdH5/fPjt21gau/idU3ngkFjFqgR452kpSAT5koUvGWEz39pH26YYTlkJMVYW2u+SdQiVpESenmQ/2eKxQWjEJjvnBA4FYT15k94LZms29iO3VEwQ8yxI9i3zlymxvsFqp0EbhBQHsC9narkfh/k37uDxWq9UxrpHuuIpYMguMkYTkokrr1zT2cnUgTuSfsS3J82sxe4AKJIOSI+ARl8HBXXqTwIDAQAB",
+        "jwtAuthorizationGrantEnabled": "true",
+        "jwtAuthorizationGrantAllowedClockSkew": "5"
+      }
+    }
+  ]
+}

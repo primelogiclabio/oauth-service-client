@@ -75,10 +75,19 @@ final class Certificates {
         }
     }
 
-    /** RFC 8705 {@code x5t#S256}: base64url SHA-256 of the DER certificate. */
+    /** JWS {@code x5t#S256} (and RFC 8705's): base64url SHA-256 of the DER certificate. */
     static String thumbprintS256(X509Certificate cert) {
+        return thumbprint("SHA-256", cert);
+    }
+
+    /** JWS {@code x5t}: base64url SHA-1 of the DER certificate, which Entra ID's and OIC's examples still use. */
+    static String thumbprintSha1(X509Certificate cert) {
+        return thumbprint("SHA-1", cert);
+    }
+
+    private static String thumbprint(String digest, X509Certificate cert) {
         try {
-            byte[] hash = MessageDigest.getInstance("SHA-256").digest(cert.getEncoded());
+            byte[] hash = MessageDigest.getInstance(digest).digest(cert.getEncoded());
             return Base64.getUrlEncoder().withoutPadding().encodeToString(hash);
         } catch (GeneralSecurityException e) {
             throw new IllegalStateException(e);

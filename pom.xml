@@ -27,9 +27,16 @@
         <maven.compiler.source>1.8</maven.compiler.source>
         <maven.compiler.target>1.8</maven.compiler.target>
         <junit.version>5.10.2</junit.version>
+        <!-- 2.9.x is the last line that runs on Java 8 (3.x needs Java 11) -->
+        <caffeine.version>2.9.3</caffeine.version>
     </properties>
 
     <dependencies>
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+            <version>${caffeine.version}</version>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>

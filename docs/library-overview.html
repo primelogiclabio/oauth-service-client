@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>oauth-service-client: how the library works</title>
+<script data-doc>
+  var THEME_KEY = 'oauth-service-client-overview-theme';
+  var darkMQ = window.matchMedia('(prefers-color-scheme: dark)');
+  var hostTheme = document.documentElement.getAttribute('data-theme');
+  function savedTheme() { try { return localStorage.getItem(THEME_KEY); } catch (e) { return null; } }
+  function applyTheme() {
+    var t = savedTheme() || hostTheme;
+    if (t) { document.documentElement.setAttribute('data-theme', t); } else { document.documentElement.removeAttribute('data-theme'); }
+  }
+  applyTheme();
+</script>
+<style>
+/* Plan: same spec-sheet look as the project's other docs, system fonts only (works offline).
+   Teal for structure, amber for tokens and credentials, dashed outlines for what isn't built yet. */
+:root{
+  color-scheme:light;
+  --bg:#f4f6f9; --surface:#ffffff; --fg:#17202c; --muted:#596578; --line:#d8dde6; --line-strong:#b6bfcc;
+  --accent:#0a6a73; --token:#a35d06; --code-bg:#ecf0f5; --shadow:rgba(16,24,40,.12);
+  --ok:#1d7a3a; --todo:#8a5a00;
+  --display:"Bahnschrift","Segoe UI Semibold","Segoe UI",system-ui,-apple-system,sans-serif;
+  --body:"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --mono:"Cascadia Mono",Consolas,ui-monospace,"SF Mono",monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --bg:#10151c; --surface:#171f29; --fg:#e3e8ef; --muted:#9aa5b5; --line:#28323f; --line-strong:#3a4656;
+    --accent:#52b9c1; --token:#e3a84f; --code-bg:#1d2632; --shadow:rgba(0,0,0,.5); --ok:#5fc27e; --todo:#e3b04f;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#10151c; --surface:#171f29; --fg:#e3e8ef; --muted:#9aa5b5; --line:#28323f; --line-strong:#3a4656;
+  --accent:#52b9c1; --token:#e3a84f; --code-bg:#1d2632; --shadow:rgba(0,0,0,.5); --ok:#5fc27e; --todo:#e3b04f;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0; padding:32px 16px 64px; background:var(--bg); color:var(--fg); font:16px/1.6 var(--body)}
+a{color:var(--accent)}
+a:focus-visible, button:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+h1,h2,h3{font-family:var(--display); line-height:1.2; text-wrap:balance; margin:0; font-weight:600}
+h1{font-size:2.1rem}
+h2{font-size:1.55rem; margin:56px 0 14px; padding-top:18px; border-top:1px solid var(--line)}
+h3{font-size:1.18rem; margin:32px 0 10px}
+p, ul, ol{max-width:70ch}
+p{margin:0 0 14px}
+ul, ol{padding-left:1.3em; margin:0 0 14px}
+li{margin:4px 0}
+code{font:0.88em var(--mono); background:var(--code-bg); padding:1px 5px; border-radius:4px}
+pre{font:13px/1.55 var(--mono); background:var(--code-bg); border:1px solid var(--line); border-radius:8px; padding:14px 16px; overflow-x:auto; margin:0 0 16px; max-width:100%}
+pre code{background:none; padding:0}
+.tokn{color:var(--token)}
+header.top{display:flex; flex-wrap:wrap; gap:16px; align-items:flex-start; justify-content:space-between; margin-bottom:8px}
+header.top .lede{color:var(--muted); font-size:1.06rem; margin:10px 0 0; max-width:64ch}
+.stats{display:flex; flex-wrap:wrap; gap:10px; margin:18px 0 0}
+.stat{background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:8px 14px; font-size:.88rem; color:var(--muted)}
+.stat b{display:block; font-family:var(--display); font-size:1.15rem; color:var(--fg); font-variant-numeric:tabular-nums}
+.theme-btn{font:inherit; font-size:.85rem; padding:6px 14px; border-radius:999px; border:1px solid var(--line-strong); background:var(--surface); color:var(--fg); cursor:pointer; white-space:nowrap}
+.callout{border-left:3px solid var(--accent); background:var(--surface); padding:12px 16px; border-radius:0 8px 8px 0; margin:0 0 18px; max-width:70ch}
+.callout p:last-child{margin-bottom:0}
+.table-wrap{overflow-x:auto; margin:0 0 18px; border:1px solid var(--line); border-radius:8px; background:var(--surface)}
+table{border-collapse:collapse; width:100%; font-size:.92rem}
+th, td{text-align:left; vertical-align:top; padding:9px 12px; border-bottom:1px solid var(--line)}
+th{font-family:var(--display); font-weight:600; font-size:.95rem; background:var(--code-bg)}
+tr:last-child td{border-bottom:0}
+td code{white-space:nowrap}
+.pill{display:inline-block; font-size:.78rem; font-weight:600; padding:1px 9px; border-radius:999px; border:1px solid currentColor; white-space:nowrap}
+.pill.ok{color:var(--ok)} .pill.todo{color:var(--todo)} .pill.out{color:var(--muted)}
+figure{margin:0 0 22px}
+figure .canvas{background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:12px; overflow-x:auto}
+figure svg{display:block; width:100%; min-width:620px; height:auto; color:var(--fg)}
+figcaption{color:var(--muted); font-size:.9rem; margin-top:8px; max-width:70ch}
+.dg text{fill:currentColor; font:12px var(--body)}
+.dg .t{font-family:var(--display); font-weight:600; font-size:13px}
+.dg .m{font-family:var(--mono); font-size:12px}
+.dg .s{fill:var(--muted); font-size:11px}
+.dg .box{fill:var(--surface); stroke:currentColor; stroke-width:1.2}
+.dg .plan{fill:none; stroke:var(--muted); stroke-width:1.2; stroke-dasharray:5 4}
+.dg .note{fill:var(--code-bg); stroke:var(--line-strong); stroke-width:1}
+.dg .zone{fill:none; stroke:var(--line-strong); stroke-dasharray:5 4}
+.dg .ln{fill:none; stroke:currentColor; stroke-width:1.4}
+.dg .dash{stroke-dasharray:5 4}
+.dg .tok{color:var(--token)}
+.dg .acc{color:var(--accent)}
+.dg .bar-acc{fill:var(--accent); opacity:.22}
+.dg .bar-tok{fill:var(--token); opacity:.35}
+footer{margin-top:56px; color:var(--muted); font-size:.85rem; border-top:1px solid var(--line); padding-top:14px}
+
+.sidenav ol{list-style:none; margin:0; padding:0}
+.sidenav a{display:block; padding:5px 12px; border-left:2px solid transparent; color:var(--muted); text-decoration:none; font-size:.9rem; line-height:1.35}
+.sidenav a:hover{color:var(--fg)}
+.sidenav a[aria-current="true"]{color:var(--accent); border-left-color:var(--accent); font-weight:600}
+.sidenav ol ol{margin:0 0 4px}
+.sidenav ol ol a{padding:3px 12px 3px 26px; font-size:.84rem}
+.sidenav li.in-path > a:not([aria-current="true"]){color:var(--fg); font-weight:600}
+.sidenav{position:sticky; top:0; z-index:20; margin:-32px -16px 24px; padding:8px 16px; background:var(--bg); border-bottom:1px solid var(--line)}
+.sidenav-title{display:none}
+.sidenav-btn{font:inherit; font-size:.9rem; font-weight:600; padding:6px 14px; border-radius:999px; border:1px solid var(--line-strong); background:var(--surface); color:var(--fg); cursor:pointer}
+.sidenav > ol{display:none; position:absolute; left:16px; right:16px; top:100%; max-height:70vh; overflow:auto; padding:8px; background:var(--surface); border:1px solid var(--line-strong); border-radius:12px; box-shadow:0 8px 24px var(--shadow)}
+.sidenav.open > ol{display:block}
+main [id]{scroll-margin-top:64px}
+@media (min-width:1024px){
+  .layout{display:grid; grid-template-columns:220px minmax(0,1fr); gap:48px; max-width:1240px; margin:0 auto}
+  .content{min-width:0; margin:0}
+  .sidenav{top:32px; align-self:start; max-height:calc(100vh - 64px); overflow-y:auto; margin:0; padding:0; background:none; border:0}
+  .sidenav-btn{display:none}
+  .sidenav-title{display:block; margin:0 0 8px 14px; font-size:.75rem; letter-spacing:.08em; text-transform:uppercase; color:var(--muted)}
+  .sidenav > ol{display:block; position:static; max-height:none; overflow:visible; padding:0; background:none; border:0; border-left:1px solid var(--line); border-radius:0; box-shadow:none}
+  .sidenav a{margin-left:-1px}
+  main [id]{scroll-margin-top:16px}
+}
+@media (prefers-reduced-motion: no-preference){ html{scroll-behavior:smooth} }
+@media print{
+  :root{--bg:#fff; --surface:#fff; --fg:#000; --muted:#444; --line:#ccc; --line-strong:#999; --code-bg:#f2f2f2}
+  .sidenav, .theme-btn{display:none !important}
+  .layout{display:block; max-width:none}
+  body{padding:0}
+  pre{white-space:pre-wrap; overflow-wrap:anywhere}
+  h2, h3{break-after:avoid}
+  pre, table, figure{break-inside:avoid}
+  a[href^="http"]::after{content:" (" attr(href) ")"; font-size:.8em; color:var(--muted)}
+}
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav class="sidenav" id="sidenav" aria-label="On this page">
+    <button type="button" class="sidenav-btn" aria-expanded="false" aria-controls="sidenav-list">Sections</button>
+    <p class="sidenav-title">On this page</p>
+    <ol id="sidenav-list">
+      <li><a href="#what-it-does">What it does</a></li>
+      <li><a href="#status">What works today</a></li>
+      <li><a href="#architecture">How the pieces fit</a></li>
+      <li><a href="#one-token">One token, step by step</a></li>
+      <li><a href="#client-info">ClientInfo settings</a></li>
+      <li><a href="#client-auth">Choosing client authentication</a></li>
+      <li><a href="#wire">What goes on the wire</a></li>
+      <li><a href="#assertions">Signed assertions</a></li>
+      <li><a href="#cache">Token cache</a></li>
+      <li><a href="#scopes">Scopes from the app</a></li>
+      <li><a href="#expiry">How expiry is decided</a></li>
+      <li><a href="#retries">Retries and timeouts</a></li>
+      <li><a href="#errors">Errors</a></li>
+      <li><a href="#examples">ClientInfo per service</a></li>
+      <li><a href="#testing">Testing</a></li>
+      <li><a href="#limits">Planned and out of scope</a></li>
+      <li><a href="#references">References</a></li>
+    </ol>
+  </nav>
+
+  <div class="content">
+    <header class="top">
+      <div>
+        <h1>oauth-service-client: how the library works</h1>
+        <p class="lede">A Java 8+ library for backend services that call OAuth-protected APIs. You describe each service and tenant once in a <code>ClientInfo</code>; the library gets the access token, keeps it until shortly before it expires, and (once the public API lands) makes the request.</p>
+        <div class="stats">
+          <div class="stat"><b>3</b>grants</div>
+          <div class="stat"><b>5</b>client authentication methods</div>
+          <div class="stat"><b>1</b>runtime dependency (Caffeine 2.9.3)</div>
+          <div class="stat"><b>Java 8 and 21</b>built and tested</div>
+        </div>
+      </div>
+      <button type="button" class="theme-btn" id="theme-btn">Theme: System</button>
+    </header>
+
+    <main>
+      <section aria-labelledby="what-it-does">
+        <h2 id="what-it-does">What it does</h2>
+        <p>Your backend calls external services such as DocuSign, Salesforce, Jira, Vertex, Microsoft Entra ID apps, Okta, Auth0 and Oracle Integration, often once per customer (tenant). Each one wants an access token from its token endpoint. This library takes that work off the calling code:</p>
+        <ul>
+          <li>It sends the token request for the configured <strong>grant</strong> (client credentials, JWT bearer or refresh token), with the right <strong>client authentication</strong>.</li>
+          <li>It caches tokens per <strong>service, tenant and scope set</strong> and renews them 5 minutes before they expire, one renewal at a time.</li>
+          <li>It retries only when that is safe, and reports every failure as one exception type with the server's OAuth error.</li>
+        </ul>
+        <div class="callout"><p><strong>No browser, no <code>/authorize</code> call.</strong> All three grants are a single POST to the token endpoint. Where a vendor needs a person's approval first (Jira 3LO apps, DocuSign consent), that happens once, outside the library; the caller then passes the resulting refresh token, or relies on the recorded consent.</p></div>
+        <p>The core is generic: it implements the standards (RFC 6749, 7523, 8705) and handles vendor differences through generic settings such as <code>tokenParameter</code>, <code>assertionAudience</code>, <code>assertionClaim</code> and <code>clientSecretInBody</code>. Vendor-specific clients are planned as a separate layer on top.</p>
+      </section>
+
+      <section aria-labelledby="status">
+        <h2 id="status">What works today</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Part</th><th>Status</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>ClientInfo</code>, <code>ClientKey</code>, <code>Grant</code></td><td><span class="pill ok">Done</span></td><td>Public. Builder that reports every problem at once; secrets never printed.</td></tr>
+            <tr><td>Token requests</td><td><span class="pill ok">Done</span></td><td>All three grants and five client authentication methods; tested against a stub server and a live Keycloak.</td></tr>
+            <tr><td>Token cache</td><td><span class="pill ok">Done</span></td><td>Per (service, tenant, scope set), on Caffeine 2.9.3.</td></tr>
+            <tr><td>Scopes passed by the app</td><td><span class="pill ok">Done</span></td><td>Replace the <code>ClientInfo</code> defaults for that token.</td></tr>
+            <tr><td><code>OAuthServiceException</code></td><td><span class="pill ok">Done</span></td><td>Public.</td></tr>
+            <tr><td>Public API: <code>initialize</code>, <code>request</code>, <code>close</code></td><td><span class="pill todo">Next</span></td><td>Until then the token code is package-private: an application can build a <code>ClientInfo</code> but can't get a token yet.</td></tr>
+            <tr><td>Outbound requests</td><td><span class="pill todo">Planned</span></td><td>Attach the token, renew once on 401, timeouts and <code>Retry-After</code>.</td></tr>
+            <tr><td>Introspection (RFC 7662)</td><td><span class="pill todo">Planned</span></td><td>For tokens that carry no expiry (Salesforce). <code>introspectionUrl</code> can already be set but isn't used yet.</td></tr>
+            <tr><td>Metadata discovery (RFC 8414)</td><td><span class="pill todo">Planned</span></td><td>An issuer instead of an explicit token URL.</td></tr>
+            <tr><td>Refresh-token rotation write-back, cool-down after failures, vendor clients</td><td><span class="pill todo">Planned</span></td><td>See <a href="../PROGRESS.md">PROGRESS.md</a>.</td></tr>
+            <tr><td>DPoP, PS256 signing</td><td><span class="pill out">Parked</span></td><td>Not planned yet.</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section aria-labelledby="architecture">
+        <h2 id="architecture">How the pieces fit</h2>
+        <figure>
+          <div class="canvas">
+          <svg class="dg" viewBox="0 0 760 330" role="img" aria-label="Components: the planned service client asks the token cache, which calls the token client on a miss; the token client signs assertions, sends through the retrying executor and the HTTPS transport to the token endpoint. Planned parts are dashed.">
+            <defs>
+              <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+            </defs>
+            <rect class="box" x="20" y="20" width="160" height="50" rx="8"/>
+            <text class="t" x="100" y="42" text-anchor="middle">Your service</text>
+            <text class="s" x="100" y="59" text-anchor="middle">builds ClientInfo</text>
+            <rect class="plan" x="230" y="20" width="200" height="50" rx="8"/>
+            <text class="t" x="330" y="42" text-anchor="middle">OAuthServiceClient</text>
+            <text class="s" x="330" y="59" text-anchor="middle">initialize · request · close (next)</text>
+            <rect class="plan" x="560" y="20" width="180" height="50" rx="8"/>
+            <text class="t" x="650" y="42" text-anchor="middle">Service API</text>
+            <text class="s" x="650" y="59" text-anchor="middle">outbound request (planned)</text>
+            <rect class="box" x="230" y="110" width="200" height="50" rx="8"/>
+            <text class="m" x="330" y="132" text-anchor="middle">TokenCache</text>
+            <text class="s" x="330" y="149" text-anchor="middle">per service, tenant, scope set</text>
+            <rect class="box" x="230" y="190" width="200" height="50" rx="8"/>
+            <text class="m" x="330" y="212" text-anchor="middle">TokenClient</text>
+            <text class="s" x="330" y="229" text-anchor="middle">form + client authentication</text>
+            <rect class="box" x="20" y="190" width="160" height="50" rx="8"/>
+            <text class="m" x="100" y="212" text-anchor="middle">JwtAssertion, Jws</text>
+            <text class="s" x="100" y="229" text-anchor="middle">RS256, ES256/384/512</text>
+            <rect class="box" x="230" y="270" width="200" height="50" rx="8"/>
+            <text class="m" x="330" y="292" text-anchor="middle">HttpExecutor → transport</text>
+            <text class="s" x="330" y="309" text-anchor="middle">https only, safe retries, deadline</text>
+            <rect class="box" x="20" y="270" width="160" height="50" rx="8"/>
+            <text class="m" x="100" y="292" text-anchor="middle">Tls</text>
+            <text class="s" x="100" y="309" text-anchor="middle">client certificate (mTLS)</text>
+            <rect class="box" x="560" y="270" width="180" height="50" rx="8"/>
+            <text class="t" x="650" y="292" text-anchor="middle">Token endpoint</text>
+            <text class="s" x="650" y="309" text-anchor="middle">the vendor's /token</text>
+            <line class="ln dash" x1="180" y1="45" x2="228" y2="45" marker-end="url(#a1)"/>
+            <line class="ln dash" x1="430" y1="45" x2="558" y2="45" marker-end="url(#a1)"/>
+            <text class="s" x="494" y="38" text-anchor="middle">Bearer token</text>
+            <line class="ln dash" x1="330" y1="70" x2="330" y2="108" marker-end="url(#a1)"/>
+            <text class="s" x="338" y="93">get(info, scopes)</text>
+            <line class="ln" x1="330" y1="160" x2="330" y2="188" marker-end="url(#a1)"/>
+            <text class="s" x="338" y="178">on a miss</text>
+            <line class="ln" x1="230" y1="215" x2="182" y2="215" marker-end="url(#a1)"/>
+            <line class="ln" x1="330" y1="240" x2="330" y2="268" marker-end="url(#a1)"/>
+            <line class="ln" x1="230" y1="295" x2="182" y2="295" marker-end="url(#a1)"/>
+            <g class="tok"><line class="ln" x1="430" y1="295" x2="558" y2="295" marker-end="url(#a1)"/></g>
+            <text class="s" x="494" y="288" text-anchor="middle">POST, TLS</text>
+          </svg>
+          </div>
+          <figcaption>Solid boxes exist today; dashed ones are the next items. Everything below <code>OAuthServiceClient</code> is package-private, so the public surface stays small.</figcaption>
+        </figure>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Class</th><th>Visibility</th><th>Job</th></tr></thead>
+          <tbody>
+            <tr><td><code>ClientInfo</code>, <code>ClientKey</code>, <code>Grant</code></td><td>public</td><td>How to get tokens for one service and tenant; the key or certificate; the grant.</td></tr>
+            <tr><td><code>AccessToken</code></td><td>public</td><td>The token, its type, scope, expiry and every other response field (e.g. Salesforce's <code>instance_url</code>).</td></tr>
+            <tr><td><code>OAuthServiceException</code></td><td>public</td><td>Every failure without a usable answer.</td></tr>
+            <tr><td><code>TokenCache</code></td><td>package</td><td>Reuse, renewal, one renewal per key, eviction.</td></tr>
+            <tr><td><code>TokenClient</code> (a <code>TokenFetcher</code>)</td><td>package</td><td>Builds and sends the token request, reads the answer.</td></tr>
+            <tr><td><code>JwtAssertion</code>, <code>Jws</code></td><td>package</td><td>Signed JWTs for the JWT bearer grant and <code>private_key_jwt</code>.</td></tr>
+            <tr><td><code>HttpExecutor</code>, <code>UrlConnectionTransport</code>, <code>Tls</code></td><td>package</td><td>Retries and the overall deadline; HTTP over the JDK's <code>HttpURLConnection</code>; the TLS socket factory for a client certificate.</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section aria-labelledby="one-token">
+        <h2 id="one-token">One token, step by step</h2>
+        <ol>
+          <li>The caller asks the cache for a token with a <code>ClientInfo</code> and, optionally, its own scopes.</li>
+          <li>The cache works out the scope set (the caller's, else the <code>ClientInfo</code> defaults) and looks up (service, tenant, scope set). A token is reused if the settings that shape it still match and it isn't within 5 minutes of expiry.</li>
+          <li>Otherwise one thread claims the renewal; other threads either keep using the current token if it hasn't expired yet, or wait and share the result.</li>
+          <li><code>TokenClient</code> builds the form for the grant, adds client authentication, signs any assertion with a fresh <code>jti</code>, and attaches the client certificate if one is set.</li>
+          <li><code>HttpExecutor</code> checks the URL is https and the headers are clean, then sends. It resends only when the server certainly didn't process the request.</li>
+          <li>The answer is parsed (JSON, or form-encoded), checked, and turned into an <code>AccessToken</code> whose expiry comes from the JWT's <code>exp</code> or from <code>expires_in</code>.</li>
+          <li>The cache stores it and hands it to every waiting thread. If the request failed but the old token hasn't expired, the old token is used and the failure logged.</li>
+        </ol>
+      </section>
+
+      <section aria-labelledby="client-info">
+        <h2 id="client-info">ClientInfo settings</h2>
+        <p>Build one with <code>ClientInfo.forTenant(service, tenant)</code> or <code>ClientInfo.global(service)</code>. <code>build()</code> checks everything and throws one <code>IllegalArgumentException</code> listing every problem, with no secrets in the message. The result is immutable and thread-safe.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Builder method</th><th>Needed for</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>forTenant(service, tenant)</code> / <code>global(service)</code></td><td>always</td><td>Names the cache entry. Global is a flag, not a "GLOBAL" tenant, so a real tenant coded GLOBAL can't collide.</td></tr>
+            <tr><td><code>tokenUrl</code></td><td>always</td><td>The token endpoint; https only, no user info, fragment or backslash; a query is allowed.</td></tr>
+            <tr><td><code>grant</code></td><td>optional</td><td><code>CLIENT_CREDENTIALS</code> (default), <code>JWT_BEARER</code> or <code>REFRESH_TOKEN</code>.</td></tr>
+            <tr><td><code>clientId</code></td><td>always</td><td>The registered client ID; also the <code>iss</code> of every assertion.</td></tr>
+            <tr><td><code>clientSecret</code>, <code>clientSecretInBody</code></td><td>secret clients</td><td>Sent in a Basic header by default, in the form when <code>clientSecretInBody(true)</code>.</td></tr>
+            <tr><td><code>signingKey</code></td><td>JWT bearer, <code>private_key_jwt</code></td><td>A <code>ClientKey</code> (RSA of 2048 bits or more, or EC on P-256/384/521), with an optional certificate and key ID.</td></tr>
+            <tr><td><code>clientCertificate</code></td><td>mutual TLS</td><td>A <code>ClientKey</code> with a certificate; presented in the TLS handshake whenever set.</td></tr>
+            <tr><td><code>subject</code></td><td>JWT bearer</td><td>The assertion's <code>sub</code> (a DocuSign user ID, a Salesforce username); defaults to the client ID.</td></tr>
+            <tr><td><code>assertionAudience</code></td><td>JWT bearer (required); <code>private_key_jwt</code> (optional)</td><td>The assertion's <code>aud</code>; for a client assertion it defaults to the token URL.</td></tr>
+            <tr><td><code>assertionClaim(name, value)</code></td><td>optional</td><td>Extra string claims, e.g. DocuSign's <code>scope</code>. <code>iss</code>, <code>sub</code>, <code>aud</code>, <code>exp</code>, <code>iat</code>, <code>nbf</code>, <code>jti</code> are refused.</td></tr>
+            <tr><td><code>refreshToken</code></td><td>refresh token grant</td><td>The refresh token from an earlier consent.</td></tr>
+            <tr><td><code>scope(...)</code></td><td>optional</td><td>Default scopes, one per argument; the app's scopes replace them per request.</td></tr>
+            <tr><td><code>tokenParameter(name, value)</code></td><td>optional</td><td>Extra form fields, e.g. <code>audience</code>. Names the library sets (<code>grant_type</code>, <code>scope</code>, <code>client_id</code>, …) are refused.</td></tr>
+            <tr><td><code>introspectionUrl</code></td><td>planned</td><td>Stored and checked now; used once introspection is built.</td></tr>
+            <tr><td><code>attribute(name, value)</code></td><td>optional</td><td>The caller's own data (an account ID, a base URL); never sent.</td></tr>
+          </tbody>
+        </table></div>
+        <p>Settings that don't fit the grant are refused rather than ignored: a <code>subject</code> outside JWT bearer, a <code>refreshToken</code> outside the refresh grant, a secret and a signing key both used to authenticate the client, an expired certificate.</p>
+      </section>
+
+      <section aria-labelledby="client-auth">
+        <h2 id="client-auth">Choosing client authentication</h2>
+        <p>There is no setting for the method: it follows from what is set, in this order.</p>
+        <figure>
+          <div class="canvas">
+          <svg class="dg" viewBox="0 0 760 250" role="img" aria-label="Decision order: a signing key outside the JWT bearer grant means private_key_jwt; otherwise a client secret means a Basic header or form fields; otherwise a client certificate means mutual TLS; otherwise none.">
+            <defs>
+              <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+            </defs>
+            <rect class="note" x="20" y="16" width="300" height="38" rx="6"/>
+            <text class="s" x="170" y="40" text-anchor="middle">signing key set, and grant isn't JWT bearer?</text>
+            <rect class="note" x="20" y="80" width="300" height="38" rx="6"/>
+            <text class="s" x="170" y="104" text-anchor="middle">client secret set?</text>
+            <rect class="note" x="20" y="144" width="300" height="38" rx="6"/>
+            <text class="s" x="170" y="168" text-anchor="middle">client certificate set?</text>
+            <rect class="box" x="400" y="16" width="340" height="38" rx="6"/>
+            <text x="570" y="40" text-anchor="middle">private_key_jwt</text>
+            <rect class="box" x="400" y="80" width="340" height="38" rx="6"/>
+            <text x="570" y="104" text-anchor="middle">Basic header, or form with clientSecretInBody</text>
+            <rect class="box" x="400" y="144" width="340" height="38" rx="6"/>
+            <text x="570" y="168" text-anchor="middle">mutual TLS + client_id</text>
+            <rect class="box" x="400" y="204" width="340" height="38" rx="6"/>
+            <text x="570" y="228" text-anchor="middle">none: client_id, or nothing with JWT bearer</text>
+            <line class="ln" x1="320" y1="35" x2="398" y2="35" marker-end="url(#a2)"/><text class="s" x="360" y="29" text-anchor="middle">yes</text>
+            <line class="ln" x1="320" y1="99" x2="398" y2="99" marker-end="url(#a2)"/><text class="s" x="360" y="93" text-anchor="middle">yes</text>
+            <line class="ln" x1="320" y1="163" x2="398" y2="163" marker-end="url(#a2)"/><text class="s" x="360" y="157" text-anchor="middle">yes</text>
+            <line class="ln" x1="170" y1="54" x2="170" y2="78" marker-end="url(#a2)"/><text class="s" x="178" y="70">no</text>
+            <line class="ln" x1="170" y1="118" x2="170" y2="142" marker-end="url(#a2)"/><text class="s" x="178" y="134">no</text>
+            <polyline class="ln" points="170,182 170,223 398,223" marker-end="url(#a2)"/><text class="s" x="178" y="200">no</text>
+          </svg>
+          </div>
+          <figcaption>With the JWT bearer grant the signing key signs the grant's assertion, so a secret, if set, authenticates the client (Oracle Identity, Keycloak). A client certificate is presented in the TLS handshake whenever it is set, even when a secret or key authenticates, so certificate-bound tokens work.</figcaption>
+        </figure>
+      </section>
+
+      <section aria-labelledby="wire">
+        <h2 id="wire">What goes on the wire</h2>
+        <p>Every token request is a POST with <code>Content-Type: application/x-www-form-urlencoded; charset=UTF-8</code> and <code>Accept: application/json</code>. The form fields come in this order:</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Grant</th><th>Grant fields</th><th>Then</th></tr></thead>
+          <tbody>
+            <tr><td>Client credentials</td><td><code>grant_type=client_credentials</code></td><td rowspan="3"><code>scope</code> (the scopes joined by spaces, only when there are any), the token parameters in the order set, then the client authentication fields</td></tr>
+            <tr><td>JWT bearer</td><td><code>grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer</code>, <code>assertion</code></td></tr>
+            <tr><td>Refresh token</td><td><code>grant_type=refresh_token</code>, <code>refresh_token</code></td></tr>
+          </tbody>
+        </table></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Client authentication</th><th>Added</th></tr></thead>
+          <tbody>
+            <tr><td>Basic</td><td>Header <code>Authorization: Basic base64(urlencode(client_id) ":" urlencode(secret))</code>, as RFC 6749 §2.3.1 says</td></tr>
+            <tr><td>Secret in the form</td><td><code>client_id</code>, <code>client_secret</code></td></tr>
+            <tr><td><code>private_key_jwt</code></td><td><code>client_id</code>, <code>client_assertion_type</code>, <code>client_assertion</code></td></tr>
+            <tr><td>Mutual TLS</td><td><code>client_id</code>; the certificate goes in the handshake</td></tr>
+            <tr><td>None</td><td><code>client_id</code>, except with JWT bearer, which sends only <code>grant_type</code> and <code>assertion</code> (as DocuSign and Salesforce document)</td></tr>
+          </tbody>
+        </table></div>
+<pre><code>POST /oauth/token HTTP/1.1
+Host: auth.vertexcloud.com
+Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+Accept: application/json
+Authorization: Basic <span class="tokn">Y2xpZW50OnNlY3JldA==</span>
+
+grant_type=client_credentials&amp;scope=payroll-calculation&amp;audience=verx%3A%2F%2Fmigration-api</code></pre>
+      </section>
+
+      <section aria-labelledby="assertions">
+        <h2 id="assertions">Signed assertions</h2>
+        <p>Both the JWT bearer grant and <code>private_key_jwt</code> use a JWT signed with the <code>signingKey</code>. A new one is built for every attempt, so a retry never reuses a <code>jti</code>.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Part</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td><code>alg</code></td><td>RS256 for RSA keys; ES256, ES384 or ES512 by the EC key's curve. There is no setting yet.</td></tr>
+            <tr><td><code>typ</code></td><td><code>JWT</code></td></tr>
+            <tr><td><code>kid</code></td><td>The key ID, when the <code>ClientKey</code> has one (<code>withKeyId</code>).</td></tr>
+            <tr><td><code>x5t#S256</code>, <code>x5t</code></td><td>SHA-256 and SHA-1 thumbprints of the certificate, when the key has one (Entra ID, Oracle Identity).</td></tr>
+            <tr><td><code>iss</code></td><td>The client ID.</td></tr>
+            <tr><td><code>sub</code></td><td>Grant assertion: <code>subject</code>, else the client ID. Client assertion: the client ID.</td></tr>
+            <tr><td><code>aud</code></td><td>Grant assertion: <code>assertionAudience</code>. Client assertion: <code>assertionAudience</code>, else the token URL.</td></tr>
+            <tr><td><code>jti</code></td><td>A random UUID, new every time.</td></tr>
+            <tr><td><code>iat</code>, <code>nbf</code>, <code>exp</code></td><td>Now, now, and now + 60 seconds (Salesforce allows 3 minutes at most, Auth0 5).</td></tr>
+            <tr><td>Extra claims</td><td>Each <code>assertionClaim</code>, after the standard ones.</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section aria-labelledby="cache">
+        <h2 id="cache">Token cache</h2>
+        <figure>
+          <div class="canvas">
+          <svg class="dg" viewBox="0 0 760 150" role="img" aria-label="Cached token lifetime: reused until five minutes before expiry, renewed in the last five minutes, evicted at expiry; a 401 drops it at any time.">
+            <rect class="bar-acc" x="40" y="58" width="560" height="22" rx="4"/>
+            <rect class="bar-tok" x="600" y="58" width="120" height="22" rx="4"/>
+            <line class="ln" x1="40" y1="92" x2="720" y2="92"/>
+            <line class="ln" x1="40" y1="86" x2="40" y2="98"/><line class="ln" x1="600" y1="86" x2="600" y2="98"/><line class="ln" x1="720" y1="86" x2="720" y2="98"/>
+            <text class="t" x="320" y="50" text-anchor="middle">get() returns the cached token</text>
+            <g class="tok"><text x="660" y="50" text-anchor="middle" style="fill:currentColor;font-family:var(--display);font-weight:600;font-size:13px">renewed</text></g>
+            <text class="s" x="40" y="114" text-anchor="middle">token request sent</text>
+            <text class="s" x="600" y="114" text-anchor="middle">expiry − 5 min</text>
+            <text class="s" x="720" y="114" text-anchor="middle">expiry: evicted</text>
+            <text class="s" x="40" y="140">renew(info, scopes, rejected) after a 401: drops that token and fetches once, shared by every caller holding it.</text>
+          </svg>
+          </div>
+          <figcaption>For a token that lives less than 10 minutes, the margin is half its lifetime instead of 5 minutes.</figcaption>
+        </figure>
+        <ul>
+          <li><strong>Key:</strong> service, tenant (or global) and the scope set. The same scopes in another order share a token; different scopes get their own.</li>
+          <li><strong>Settings must match:</strong> a cached token is reused only while the settings that shape it are unchanged (token URL, grant, client ID, subject, audience, assertion claims, default scopes, token parameters, client certificate). A rotated secret, key or refresh token keeps it.</li>
+          <li><strong>One renewal per key:</strong> through a map of in-flight renewals, not inside Caffeine's <code>compute</code>, so a slow token endpoint for one key never blocks others. Waiting threads share the new token or the failure.</li>
+          <li><strong>Failures:</strong> if a renewal fails while the current token hasn't expired, the current token is returned and a warning logged.</li>
+          <li><strong>Unknown expiry:</strong> a token that says nothing about its expiry is kept until <code>renew</code> is called after a 401.</li>
+          <li><strong>Bounds:</strong> at most 10,000 entries; expired entries are evicted (in buckets of about a second, so <code>size()</code> can lag while reads check expiry exactly).</li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="scopes">
+        <h2 id="scopes">Scopes from the app</h2>
+        <p>Often only the calling code knows which scopes a call needs, so it can pass them with each request. The rule is simple: <strong>the app's scopes, when given, are used for that token; otherwise the <code>ClientInfo</code> defaults</strong>. The app's scopes are checked like the defaults: trimmed, not blank, no spaces inside one, duplicates dropped, order kept.</p>
+<pre><code>ClientInfo graph = ClientInfo.global("graph")
+        .tokenUrl("https://login.microsoftonline.com/" + directoryId + "/oauth2/v2.0/token")
+        .clientId(applicationId)
+        .signingKey(ClientKey.fromKeyStore(pkcs12, password))
+        .build();                                    // no default scopes
+
+cache.get(graph, Arrays.asList("https://graph.microsoft.com/.default"), tokenClient);   // inside the library today</code></pre>
+        <p>The public <code>request(...)</code> will take the same optional scopes argument.</p>
+      </section>
+
+      <section aria-labelledby="expiry">
+        <h2 id="expiry">How expiry is decided</h2>
+        <ol>
+          <li><strong>The JWT's <code>exp</code></strong>, when the access token is a JWT: that's what the service checks. If the token's <code>iat</code> is later than the moment the request was sent, the server's clock runs ahead and <code>exp</code> is moved back by the gap.</li>
+          <li><strong><code>expires_in</code></strong> from the response, counted from when the request was sent, limited to 0 to 10 years.</li>
+          <li><strong>Introspection</strong> (planned): ask <code>introspectionUrl</code> for the token's <code>exp</code>.</li>
+          <li><strong>Unknown</strong>: no guessed lifetime; the token is used until the service answers 401.</li>
+        </ol>
+      </section>
+
+      <section aria-labelledby="retries">
+        <h2 id="retries">Retries and timeouts</h2>
+        <p>Token requests are resent only when the server certainly didn't process them, because some vendors cap token requests (Vertex: 10 per 8 hours) and a resent rotating refresh token can revoke the whole chain.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>What happened</th><th>Token request</th></tr></thead>
+          <tbody>
+            <tr><td>Connection refused, host not found, connect timeout</td><td>Resent, after 500 ms, then 1 s</td></tr>
+            <tr><td>429, or 503 with <code>Retry-After</code> in seconds</td><td>Resent after that delay (at most 30 s)</td></tr>
+            <tr><td>500, 502, 504, a 503 without <code>Retry-After</code>, a read timeout</td><td>Not resent: reported</td></tr>
+            <tr><td>TLS handshake failed</td><td>Not resent: it would fail the same way</td></tr>
+            <tr><td>An OAuth error (400, 401)</td><td>Not resent: reported with its <code>error</code></td></tr>
+          </tbody>
+        </table></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Limit</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td>Connect timeout / read timeout</td><td>10 s / 30 s</td></tr>
+            <tr><td>Whole call, all attempts and pauses</td><td>60 s</td></tr>
+            <tr><td>Retries</td><td>2 (3 attempts)</td></tr>
+            <tr><td>Token response size</td><td>256 KB</td></tr>
+            <tr><td>Requests in flight per host / worker threads</td><td>32 / 64, per JVM</td></tr>
+          </tbody>
+        </table></div>
+        <p>A refresh token request is also sent in a mode that stops the JDK from silently resending a POST. Redirects are never followed. These limits are fixed for now; the public API item makes them settings.</p>
+      </section>
+
+      <section aria-labelledby="errors">
+        <h2 id="errors">Errors</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Exception</th><th>When</th><th>Carries</th></tr></thead>
+          <tbody>
+            <tr><td><code>IllegalArgumentException</code></td><td><code>ClientInfo.build()</code> finds problems; the app passes a blank scope or one with spaces</td><td>Every problem in one message, naming service and tenant</td></tr>
+            <tr><td><code>OAuthServiceException</code></td><td>No usable token: the server answered with an error, the answer isn't a token, the connection, TLS or deadline failed, the thread was interrupted</td><td><code>getError()</code>, <code>getErrorDescription()</code>, <code>getErrorUri()</code>, <code>getHttpStatus()</code> (-1 without an answer); the message starts "Token request for service/tenant failed"</td></tr>
+          </tbody>
+        </table></div>
+        <p>Messages never contain secrets, tokens or assertions. Server text is cleaned of control characters (so it can't forge log lines) and a non-OAuth error body is cut to 500 characters. A response whose <code>access_token</code> or <code>token_type</code> isn't safe in an HTTP header is rejected.</p>
+      </section>
+
+      <section aria-labelledby="examples">
+        <h2 id="examples">ClientInfo per service</h2>
+        <p>These match the tests in <code>ClientInfoTest</code>; <a href="services.md">services.md</a> has each vendor's details and sources.</p>
+<pre><code>// DocuSign: JWT bearer per tenant; scopes go in the assertion
+ClientInfo.forTenant("docusign", tenant)
+        .tokenUrl("https://account-d.docusign.com/oauth/token")
+        .grant(Grant.JWT_BEARER)
+        .clientId(integrationKey)
+        .signingKey(ClientKey.fromPem(rsaPrivateKeyPem))      // PKCS#1 PEM is fine
+        .subject(userId)
+        .assertionAudience("account-d.docusign.com")
+        .assertionClaim("scope", "signature impersonation")
+        .attribute("accountId", accountId)
+        .build();
+
+// Salesforce: JWT bearer, one integration for all tenants
+ClientInfo.global("salesforce")
+        .tokenUrl("https://login.salesforce.com/services/oauth2/token")
+        .grant(Grant.JWT_BEARER)
+        .clientId(consumerKey)
+        .signingKey(ClientKey.fromPem(keyPem))
+        .subject("integration@example.com")
+        .assertionAudience("https://login.salesforce.com")
+        .build();
+
+// Microsoft Entra ID: certificate credential (private_key_jwt with x5t#S256)
+ClientInfo.global("graph")
+        .tokenUrl("https://login.microsoftonline.com/" + directoryId + "/oauth2/v2.0/token")
+        .clientId(applicationId)
+        .signingKey(ClientKey.fromKeyStore(pkcs12, password))
+        .scope("https://graph.microsoft.com/.default")
+        .build();
+
+// Okta: private_key_jwt with a key ID
+ClientInfo.forTenant("okta", tenant)
+        .tokenUrl("https://acme.okta.com/oauth2/default/v1/token")
+        .clientId(clientId)
+        .signingKey(ClientKey.fromPem(keyPem).withKeyId("kid-1"))
+        .scope("custom.read")
+        .build();
+
+// Auth0 and Vertex: client credentials with an audience parameter
+ClientInfo.forTenant("vertex", tenant)
+        .tokenUrl("https://auth.vertexcloud.com/oauth/token")
+        .clientId(clientId).clientSecret(secret)
+        .tokenParameter("audience", "verx://migration-api")
+        .scope("payroll-calculation")
+        .build();
+
+// Jira service account: secret in the form body
+ClientInfo.forTenant("jira", tenant)
+        .tokenUrl("https://auth.atlassian.com/oauth/token")
+        .clientId(clientId).clientSecret(secret).clientSecretInBody(true)
+        .attribute("cloudId", cloudId)
+        .build();
+
+// Oracle Integration: JWT user assertion, client authenticated with its secret
+ClientInfo.forTenant("oic", tenant)
+        .tokenUrl("https://idcs-abc.identity.oraclecloud.com/oauth2/v1/token")
+        .grant(Grant.JWT_BEARER)
+        .clientId(clientId).clientSecret(secret)
+        .signingKey(ClientKey.fromPem(keyPem, certPem))      // x5t from the certificate
+        .subject("integration.user")
+        .assertionAudience("https://idcs-abc.identity.oraclecloud.com")
+        .scope(oicScope)
+        .build();
+
+// Mutual TLS: the certificate is the credential
+ClientInfo.global("bank")
+        .tokenUrl("https://auth.example.com/token")
+        .clientId(clientId)
+        .clientCertificate(ClientKey.fromPem(keyPem, chainPem))
+        .build();</code></pre>
+      </section>
+
+      <section aria-labelledby="testing">
+        <h2 id="testing">Testing</h2>
+        <ul>
+          <li><code>mvn verify</code> runs the unit tests on any JDK from 8 up; CI runs them on JDK 8 and 21, on Linux and Windows.</li>
+          <li><code>TokenClientTest</code> sends real HTTPS requests to an in-process stub server that uses the test CA in <code>src/test/resources/tls</code>, including a server that requires a client certificate.</li>
+          <li><code>KeycloakTokenTest</code> sends real token requests to a throwaway Keycloak 26.8.1: secret in a header and in the body, <code>private_key_jwt</code> with RSA and EC keys, mutual TLS with a certificate-bound token, the JWT bearer grant and the refresh token grant. The README section "Live check against Keycloak" has the commands.</li>
+          <li>Key tests are checked by mutation: each check breaks one rule in the code (for example, swap Basic and body, drop <code>x5t</code>, leave scopes out of the cache key) and confirms a test fails.</li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="limits">
+        <h2 id="limits">Planned and out of scope</h2>
+        <ul>
+          <li><strong>Next:</strong> the public API (<code>initialize</code>, <code>request</code>, <code>close</code>, with optional scopes per request), then outbound requests, tests for them, and the README examples.</li>
+          <li><strong>After the basics:</strong> refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body), a short cool-down after failed token requests, introspection, metadata discovery, and vendor clients on top of the core.</li>
+          <li><strong>Unverified:</strong> whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.</li>
+          <li><strong>Out of scope:</strong> sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.</li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="references">
+        <h2 id="references">References</h2>
+        <h3>In this repository</h3>
+        <ul>
+          <li><a href="services.md">services.md</a>: grants and client authentication for each example service, with vendor sources</li>
+          <li><a href="../README.md">README.md</a>: build and the Keycloak live check</li>
+          <li><a href="../PROGRESS.md">PROGRESS.md</a>: decisions, next items and known gotchas</li>
+        </ul>
+        <h3>Standards</h3>
+        <ul>
+          <li><a href="https://www.rfc-editor.org/rfc/rfc6749">RFC 6749: OAuth 2.0</a> (§2.3.1 client passwords, §4.4 client credentials, §5 token responses, §6 refresh)</li>
+          <li><a href="https://www.rfc-editor.org/rfc/rfc7523">RFC 7523: JWT bearer grant and client authentication</a></li>
+          <li><a href="https://www.rfc-editor.org/rfc/rfc7519">RFC 7519: JWT</a>, <a href="https://www.rfc-editor.org/rfc/rfc7515">RFC 7515: JWS</a> (<code>x5t</code>, <code>x5t#S256</code>)</li>
+          <li><a href="https://www.rfc-editor.org/rfc/rfc8705">RFC 8705: Mutual TLS and certificate-bound tokens</a></li>
+          <li><a href="https://www.rfc-editor.org/rfc/rfc7662">RFC 7662: Token introspection</a>, <a href="https://www.rfc-editor.org/rfc/rfc8414">RFC 8414: Server metadata</a> (planned)</li>
+        </ul>
+        <h3>Libraries and tools</h3>
+        <ul>
+          <li><a href="https://github.com/ben-manes/caffeine">Caffeine</a> 2.9.3 (the last line that runs on Java 8)</li>
+          <li><a href="https://www.keycloak.org/securing-apps/jwt-authorization-grant">Keycloak: JWT Authorization Grant</a>, used by the live check</li>
+        </ul>
+      </section>
+    </main>
+    <footer>Describes the code as of November 2026: token requests done, public API next.</footer>
+  </div>
+</div>
+<script data-doc>
+(function () {
+  var themeBtn = document.getElementById('theme-btn');
+  function labelTheme() { var t = savedTheme(); themeBtn.textContent = 'Theme: ' + (t === 'light' ? 'Light' : t === 'dark' ? 'Dark' : 'System'); }
+  themeBtn.addEventListener('click', function () {
+    var next = { '': 'light', light: 'dark', dark: '' }[savedTheme() || ''];
+    try { if (next) localStorage.setItem(THEME_KEY, next); else localStorage.removeItem(THEME_KEY); } catch (e) {}
+    applyTheme(); labelTheme();
+  });
+  darkMQ.addEventListener('change', applyTheme);
+  labelTheme();
+
+  var nav = document.getElementById('sidenav');
+  var navBtn = nav.querySelector('.sidenav-btn');
+  function setOpen(open) { nav.classList.toggle('open', open); navBtn.setAttribute('aria-expanded', String(open)); }
+  navBtn.addEventListener('click', function () { setOpen(!nav.classList.contains('open')); });
+  nav.addEventListener('click', function (e) { if (e.target.closest('a')) setOpen(false); });
+  document.addEventListener('click', function (e) { if (!nav.contains(e.target)) setOpen(false); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && nav.classList.contains('open')) { setOpen(false); navBtn.focus(); } });
+
+  var links = Array.prototype.slice.call(nav.querySelectorAll('a'));
+  var targets = links.map(function (a) { return document.getElementById(a.getAttribute('href').slice(1)); });
+  function setActive(i) {
+    var a = links[i];
+    links.forEach(function (l) { l.setAttribute('aria-current', String(l === a)); });
+    nav.querySelectorAll('.in-path').forEach(function (li) { li.classList.remove('in-path'); });
+    for (var li = a.parentElement; li; li = li.parentElement.closest('li')) li.classList.add('in-path');
+    if (nav.scrollHeight > nav.clientHeight && (a.offsetTop < nav.scrollTop || a.offsetTop + a.offsetHeight > nav.scrollTop + nav.clientHeight)) {
+      nav.scrollTop = a.offsetTop - nav.clientHeight / 2;
+    }
+  }
+  var current = -1, queued = false;
+  function update() {
+    queued = false;
+    var line = window.innerHeight * 0.3, i = 0;
+    while (i + 1 < targets.length && targets[i + 1].getBoundingClientRect().top <= line) i++;
+    if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2) i = targets.length - 1;
+    if (i !== current) { current = i; setActive(i); }
+  }
+  window.addEventListener('scroll', function () { if (!queued) { queued = true; requestAnimationFrame(update); } }, { passive: true });
+  window.addEventListener('resize', update);
+  update();
+})();
+</script>
+</body>
+</html>

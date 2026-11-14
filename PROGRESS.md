@@ -3,10 +3,9 @@
 Goal: Java library that makes outbound calls to OAuth-protected external services (DocuSign, Salesforce, Jira, ...) for backend code: the caller passes client info (per service and tenant, or global) and the endpoint and payload; the library gets the token, cached per (service, tenant) until shortly before it expires, and makes the request.
 
 ## Current focus
-- (none)
+- Set up repo: Maven, Java 8 and 21, CI (GitHub repo, license, NOTICE, README stub and .gitignore already done)
 
 ## Next
-- [ ] Set up repo: Maven, Java 8 and 21, CI, license, README stub
 - [ ] ClientInfo entity (service, tenant or GLOBAL, token URL, client id/secret or key, scopes/audience, grant, extra attributes) that the caller builds and passes to initialize()
 - [ ] Check which grant each target needs: client_credentials, JWT bearer (DocuSign, Salesforce), refresh token with write-back of rotated tokens (Jira 3LO)
 - [ ] Token cache keyed by (service, tenant): reuse until near expiry, one renewal per key at a time, expired entries evicted
@@ -31,7 +30,7 @@ Goal: Java library that makes outbound calls to OAuth-protected external service
 - New project instead of slimming oauth-connector, because that one grew sign-in, multi-tenant IdP settings and msal4j this goal doesn't need
 
 ## Parking lot
-- (none)
+- Dependabot config for Maven and GitHub Actions (noticed while planning the build setup)
 
 ## Gotchas
 - oauth-connector (../oauth-connector) is frozen and only a source of code to copy; don't change it from here

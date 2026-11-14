@@ -21,6 +21,14 @@ try (OAuthServiceClient service = ...) {
 
 Java 8 or later (built and tested on Java 8 and 21).
 
+## Build
+
+```bash
+mvn verify
+```
+
+Any JDK from 8 up builds it; on JDK 9 and later the code is compiled with `--release 8`, so it can't use newer Java APIs by accident. CI builds and tests on JDK 8 and 21, on Linux and Windows.
+
 ## License
 
 Apache License 2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE).

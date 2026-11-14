@@ -112,7 +112,7 @@ final class HttpExecutor {
                 if (!retryable) {
                     throw new OAuthServiceException("Request failed: " + request + ": " + Strings.safe(e.toString()), e);
                 }
-                LOG.log(Level.FINE, "Attempt {0} of {1} failed: {2}", new Object[] {attempt, request, Strings.safe(e.toString())});
+                LOG.log(Level.FINE, "Attempt {0} of {1} failed: {2}", new Object[] {attempt, request.toString(), Strings.safe(e.toString())});
                 pause(delay);
                 delay = next(delay);
                 continue;
@@ -128,7 +128,7 @@ final class HttpExecutor {
                 return response;
             }
             LOG.log(Level.FINE, "Attempt {0} of {1} returned HTTP {2}; retrying in {3} ms",
-                    new Object[] {attempt, request, status, wait});
+                    new Object[] {attempt, request.toString(), status, wait});
             pause(wait);
             delay = next(delay);
         }
@@ -188,7 +188,8 @@ final class HttpExecutor {
         if (header != null) {
             try {
                 long seconds = Long.parseLong(header.trim());
-                return Math.min(Math.max(0, seconds) * 1000L, MAX_RETRY_AFTER_MS);
+                // capped before multiplying, so a huge value can't overflow into "retry at once"
+                return Math.min(Math.max(0, seconds), MAX_RETRY_AFTER_MS / 1000L) * 1000L;
             } catch (NumberFormatException ignored) {
                 // HTTP-date form: use backoff
             }

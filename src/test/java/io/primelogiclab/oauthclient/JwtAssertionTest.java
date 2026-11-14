@@ -101,6 +101,23 @@ class JwtAssertionTest {
         assertTrue(e.getMessage().contains("signingKey can't sign: RSA key has 1024 bits; at least 2048"), e.getMessage());
     }
 
+    @Test
+    void aSignatureThatIsNotDerIsRefusedCleanly() {
+        byte[] raw = new byte[64]; // r and s side by side, as some HSM providers return them
+        raw[0] = 0x12;
+        assertThrows(IllegalArgumentException.class, () -> Jws.derToJose(raw, 32));
+        byte[] truncated = {0x30, 0x44, 0x02, 0x20, 1, 2, 3, 4};
+        assertThrows(IllegalArgumentException.class, () -> Jws.derToJose(truncated, 32));
+        byte[] badLength = {0x30, 0x06, 0x02, 0x7f, 1, 0x02, 0x01, 1};
+        assertThrows(IllegalArgumentException.class, () -> Jws.derToJose(badLength, 32));
+        byte[] trailing = {0x30, 0x06, 0x02, 0x01, 1, 0x02, 0x01, 1, 9};
+        assertThrows(IllegalArgumentException.class, () -> Jws.derToJose(trailing, 32));
+        byte[] ok = {0x30, 0x06, 0x02, 0x01, 1, 0x02, 0x01, 2};
+        byte[] jose = Jws.derToJose(ok, 32);
+        assertEquals(1, jose[31]);
+        assertEquals(2, jose[63]);
+    }
+
     private static X509Certificate clientCertificate() {
         return Fixtures.clientWithChain().getCertificateChain().get(0);
     }

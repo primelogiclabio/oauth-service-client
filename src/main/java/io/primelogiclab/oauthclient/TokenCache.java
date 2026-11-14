@@ -90,7 +90,7 @@ final class TokenCache {
             if (current != null && !isExpired(current)) {
                 return current; // another thread renews it; this one still works meanwhile
             }
-            AccessToken shared = await(running);
+            AccessToken shared = await(running, settings);
             if (shared != null && running.settings.equals(settings)) {
                 return shared;
             }
@@ -128,7 +128,7 @@ final class TokenCache {
             if (running == null) {
                 return fetch(key, clientInfo, scopes, fetcher, mine, null, rejected);
             }
-            AccessToken shared = await(running);
+            AccessToken shared = await(running, settings);
             if (shared != null && running.settings.equals(settings) && !sameValue(shared, rejected)) {
                 return shared;
             }
@@ -183,14 +183,21 @@ final class TokenCache {
         renewal.result.complete(token);
     }
 
-    /** The renewal's token; {@code null} when its thread was interrupted. Its failure is thrown as is. */
-    private static AccessToken await(Renewal renewal) {
+    /**
+     * The renewal's token; {@code null} when its thread was interrupted, or when it failed for other
+     * settings than {@code settings}: that failure belongs to another configuration, so the caller tries
+     * with its own. A failure for the same settings is thrown as is.
+     */
+    private static AccessToken await(Renewal renewal, List<Object> settings) {
         try {
             return renewal.result.get();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new OAuthServiceException("Interrupted while waiting for another thread's token request", e);
         } catch (ExecutionException e) {
+            if (!renewal.settings.equals(settings)) {
+                return null;
+            }
             Throwable cause = e.getCause();
             if (cause instanceof RuntimeException) {
                 throw (RuntimeException) cause;
@@ -267,24 +274,28 @@ final class TokenCache {
     }
 
     /**
-     * Service, tenant and scope set. A {@code null} tenant is global, so it never matches a tenant coded
-     * {@code GLOBAL}. The scopes are a set, so the same scopes in another order share a token, while
-     * tokens for different scopes are kept side by side instead of replacing each other.
+     * Service, tenant, user and scope set. A {@code null} tenant is global, so it never matches a tenant
+     * coded {@code GLOBAL}. The user is the subject of a JWT bearer or refresh token grant, so one user
+     * never gets another user's token; it is {@code null} for client credentials, whose token serves the
+     * whole tenant. The scopes are a set, so the same scopes in another order share a token, while tokens
+     * for different scopes are kept side by side instead of replacing each other.
      */
     static final class Key {
 
         private final String service;
         private final String tenant;
+        private final String user;
         private final Set<String> scopes;
 
-        private Key(String service, String tenant, Set<String> scopes) {
+        private Key(String service, String tenant, String user, Set<String> scopes) {
             this.service = service;
             this.tenant = tenant;
+            this.user = user;
             this.scopes = scopes;
         }
 
         static Key of(ClientInfo clientInfo, List<String> scopes) {
-            return new Key(clientInfo.getService(), clientInfo.getTenant(),
+            return new Key(clientInfo.getService(), clientInfo.getTenant(), clientInfo.cacheUser(),
                     Collections.unmodifiableSet(new TreeSet<String>(scopes)));
         }
 
@@ -294,17 +305,21 @@ final class TokenCache {
                 return false;
             }
             Key k = (Key) o;
-            return service.equals(k.service) && Objects.equals(tenant, k.tenant) && scopes.equals(k.scopes);
+            return service.equals(k.service) && Objects.equals(tenant, k.tenant) && Objects.equals(user, k.user)
+                    && scopes.equals(k.scopes);
         }
 
         @Override
         public int hashCode() {
-            return (31 * service.hashCode() + Objects.hashCode(tenant)) * 31 + scopes.hashCode();
+            return ((31 * service.hashCode() + Objects.hashCode(tenant)) * 31 + Objects.hashCode(user)) * 31
+                    + scopes.hashCode();
         }
 
+        /** Service, tenant and scopes; the user only as "(a user)", since a user ID or username is personal data. */
         @Override
         public String toString() {
             return Strings.safe((tenant == null ? service + " (global)" : service + "/" + tenant)
+                    + (user == null ? "" : " (a user)")
                     + (scopes.isEmpty() ? "" : " " + scopes));
         }
     }

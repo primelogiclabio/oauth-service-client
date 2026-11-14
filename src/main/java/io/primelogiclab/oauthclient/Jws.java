@@ -83,7 +83,16 @@ final class Jws {
         sig.initSign(key);
         sig.update(input);
         byte[] raw = sig.sign();
-        return alg.isEc() ? derToJose(raw, alg.ecCoordinateSize) : raw;
+        if (!alg.isEc()) {
+            return raw;
+        }
+        try {
+            return derToJose(raw, alg.ecCoordinateSize);
+        } catch (IllegalArgumentException e) {
+            // e.g. a provider (an HSM) that returns r and s side by side instead of DER
+            throw new java.security.SignatureException("The " + alg + " signature from the crypto provider isn't DER: "
+                    + e.getMessage(), e);
+        }
     }
 
     /**
@@ -108,19 +117,34 @@ final class Jws {
         return null;
     }
 
-    /** DER {@code SEQUENCE { INTEGER r, INTEGER s }} to fixed-width {@code r || s}. */
+    /**
+     * DER {@code SEQUENCE { INTEGER r, INTEGER s }} to fixed-width {@code r || s}.
+     *
+     * @throws IllegalArgumentException if {@code der} isn't such a sequence with integers of at most {@code size} bytes
+     */
     static byte[] derToJose(byte[] der, int size) {
+        if (der == null || der.length < 8 || der[0] != 0x30) {
+            throw new IllegalArgumentException("Invalid ECDSA signature: not a DER sequence");
+        }
         int pos = 1;
         int seqLen = der[pos++] & 0xff;
-        if ((seqLen & 0x80) != 0) {
-            pos += seqLen & 0x7f;
+        if (seqLen == 0x81) { // long form with one length byte: P-521 signatures are longer than 127 bytes
+            seqLen = der[pos++] & 0xff;
+        } else if ((seqLen & 0x80) != 0) {
+            throw new IllegalArgumentException("Invalid ECDSA signature: unexpected length form");
+        }
+        if (pos + seqLen != der.length) {
+            throw new IllegalArgumentException("Invalid ECDSA signature: length mismatch");
         }
         byte[] out = new byte[size * 2];
         for (int part = 0; part < 2; part++) {
-            if (der[pos++] != 0x02) {
-                throw new IllegalArgumentException("Invalid ECDSA signature");
+            if (pos + 2 > der.length || der[pos++] != 0x02) {
+                throw new IllegalArgumentException("Invalid ECDSA signature: integer expected");
             }
             int len = der[pos++] & 0xff;
+            if (len == 0 || (len & 0x80) != 0 || pos + len > der.length) {
+                throw new IllegalArgumentException("Invalid ECDSA signature: bad integer length");
+            }
             int start = pos;
             int n = len;
             while (n > size && der[start] == 0) { // strip sign padding
@@ -132,6 +156,9 @@ final class Jws {
             }
             System.arraycopy(der, start, out, part * size + (size - n), n);
             pos += len;
+        }
+        if (pos != der.length) {
+            throw new IllegalArgumentException("Invalid ECDSA signature: trailing bytes");
         }
         return out;
     }

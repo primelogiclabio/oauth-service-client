@@ -252,6 +252,14 @@ public final class ClientInfo {
                 clientCertificate == null ? null : clientCertificate.getCertificateChain().get(0)));
     }
 
+    /**
+     * The user a cached token belongs to, part of the cache key: the subject with the JWT bearer and refresh
+     * token grants; {@code null} with client credentials, whose token serves the whole tenant.
+     */
+    String cacheUser() {
+        return grant == Grant.CLIENT_CREDENTIALS ? null : subject;
+    }
+
     ClientAuthentication clientAuthentication() {
         if (signingKey != null && grant != Grant.JWT_BEARER) {
             return ClientAuthentication.PRIVATE_KEY_JWT;
@@ -438,7 +446,12 @@ public final class ClientInfo {
             return this;
         }
 
-        /** The JWT bearer assertion's {@code sub}, e.g. a DocuSign user ID or a Salesforce username. */
+        /**
+         * The user the token acts for: with {@link Grant#JWT_BEARER} the assertion's {@code sub} (a DocuSign
+         * user ID, a Salesforce username); with {@link Grant#REFRESH_TOKEN} the user the refresh token
+         * belongs to, which is required there and never sent. Tokens are cached per user, so one user never
+         * gets another's token; client credentials tokens are shared by the whole tenant.
+         */
         public Builder subject(String v) {
             subject = Strings.trim(v);
             return this;
@@ -581,6 +594,11 @@ public final class ClientInfo {
                     if (refreshToken == null) {
                         problems.add("REFRESH_TOKEN needs a refreshToken");
                     }
+                    if (subject == null) {
+                        // a refresh token belongs to one user: without the user in the cache key, another
+                        // user of the same service and tenant would get this user's token
+                        problems.add("REFRESH_TOKEN needs a subject: the user the refresh token belongs to");
+                    }
                     break;
                 default:
                     throw new IllegalStateException("unhandled grant " + grant);
@@ -588,8 +606,8 @@ public final class ClientInfo {
             if (!jwtBearer && clientSecret != null && signingKey != null) {
                 problems.add("set clientSecret or signingKey, not both: each authenticates the client");
             }
-            if (!jwtBearer && subject != null) {
-                problems.add("subject is only used with JWT_BEARER");
+            if (grant == Grant.CLIENT_CREDENTIALS && subject != null) {
+                problems.add("subject is only used with JWT_BEARER and REFRESH_TOKEN");
             }
             if (!jwtBearer && signingKey == null && assertionAudience != null) {
                 problems.add("assertionAudience is only used with a signingKey");

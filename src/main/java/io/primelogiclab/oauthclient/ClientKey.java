@@ -83,7 +83,10 @@ public final class ClientKey {
         return of(key, chain.toArray(new X509Certificate[0]));
     }
 
-    /** The first private key entry of a loaded keystore (PKCS#12 or JKS), with its certificate chain. */
+    /**
+     * The private key entry of a loaded keystore (PKCS#12 or JKS) that holds exactly one, with its
+     * certificate chain; a keystore with several needs {@link #fromKeyStore(KeyStore, char[], String) the alias}.
+     */
     public static ClientKey fromKeyStore(KeyStore keyStore, char[] password) {
         return fromKeyStore(keyStore, password, null);
     }
@@ -93,7 +96,8 @@ public final class ClientKey {
      * keystore and password are only read here, not kept.
      *
      * @param password the entry's password (for PKCS#12 usually the store password)
-     * @param alias    the entry to use; blank for the first private key entry
+     * @param alias    the entry to use; blank when the keystore holds only one private key entry
+     * @throws IllegalArgumentException if there's no such entry, or the alias is blank and there are several
      */
     public static ClientKey fromKeyStore(KeyStore keyStore, char[] password, String alias) {
         if (keyStore == null) {
@@ -102,10 +106,16 @@ public final class ClientKey {
         String a = Strings.trim(alias);
         try {
             if (a == null) {
-                a = Certificates.firstKeyAlias(keyStore);
-                if (a == null) {
+                List<String> keyAliases = Certificates.keyAliases(keyStore);
+                if (keyAliases.isEmpty()) {
                     throw new IllegalArgumentException("keystore has no private key entry");
                 }
+                if (keyAliases.size() > 1) {
+                    // keystore order isn't stable: picking one could use a different key from run to run
+                    throw new IllegalArgumentException("keystore has " + keyAliases.size()
+                            + " private key entries; pass the alias of the one to use");
+                }
+                a = keyAliases.get(0);
             } else if (!keyStore.isKeyEntry(a)) {
                 throw new IllegalArgumentException("keystore has no private key entry '" + Strings.safe(a) + "'");
             }

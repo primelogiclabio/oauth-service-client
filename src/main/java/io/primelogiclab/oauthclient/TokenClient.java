@@ -8,6 +8,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -32,8 +33,15 @@ final class TokenClient implements TokenFetcher {
 
     /** Largest token response accepted, in characters; real ones are a few kilobytes. */
     static final int MAX_RESPONSE_CHARS = 256 * 1024;
+    /** Largest token response read from the connection, in bytes. */
+    static final int MAX_RESPONSE_BYTES = 1024 * 1024;
     /** Most characters of a non-OAuth error body put in an exception message. */
     private static final int MAX_ERROR_BODY = 500;
+    /** Sent credentials shorter than this aren't removed from the server's text: they'd mangle it, and real ones are longer. */
+    private static final int MIN_SCRUB_LENGTH = 8;
+    /** Form fields that carry a credential. */
+    private static final List<String> CREDENTIAL_FIELDS =
+            Arrays.asList("client_secret", "refresh_token", "assertion", "client_assertion");
 
     private final HttpExecutor http;
     private final Clock clock;
@@ -57,8 +65,9 @@ final class TokenClient implements TokenFetcher {
     @Override
     public AccessToken fetch(final ClientInfo info, final List<String> scopes) {
         final String tokenUrl = tokenUrl(info);
-        final boolean refresh = info.getGrant() == Grant.REFRESH_TOKEN;
         final Instant[] sentAt = new Instant[1];
+        // every credential sent, so an error text that echoes the request can be cleaned of them
+        final List<String> sent = new ArrayList<String>(Arrays.asList(info.getClientSecret(), info.getRefreshToken()));
         try {
             HttpResponse response = http.execute(new Supplier<HttpRequest>() {
                 @Override
@@ -67,10 +76,14 @@ final class TokenClient implements TokenFetcher {
                     Instant now = clock.instant();
                     HttpRequest request = tokenRequest(info, scopes, tokenUrl, now);
                     sentAt[0] = now;
-                    return refresh ? request.notResendable() : request;
+                    sent.addAll(credentialsIn(request));
+                    // sent at most once by the JDK: it would otherwise resend a POST whose connection failed
+                    // before the answer, reusing a one-time assertion or refresh token and counting against
+                    // vendor caps; the library's own retries above happen only when the server didn't get it
+                    return request.notResendable().withMaxResponseBytes(MAX_RESPONSE_BYTES);
                 }
             }, HttpExecutor.Retry.IF_NOT_PROCESSED);
-            return parse(response, sentAt[0], refresh);
+            return parse(response, sentAt[0], sent);
         } catch (OAuthServiceException e) {
             throw new OAuthServiceException("Token request for " + info.label() + " failed: " + e.getMessage(),
                     e.getError(), e.getErrorDescription(), e.getErrorUri(), e.getHttpStatus(), e);
@@ -137,16 +150,20 @@ final class TokenClient implements TokenFetcher {
         return HttpRequest.post(tokenUrl, headers, encodeForm(form)).withClientCertificate(info.getClientCertificate());
     }
 
-    /** @param streamed sent not resendable, so the body of a 401 answer can't be read */
-    private static AccessToken parse(HttpResponse response, Instant sentAt, boolean streamed) {
+    /**
+     * The token from the answer. Token requests are sent not resendable, so the body of a 401 answer can't be read.
+     *
+     * @param sent the credentials sent, removed from any server text put in an exception
+     */
+    private static AccessToken parse(HttpResponse response, Instant sentAt, List<String> sent) {
         Map<String, Object> body = parseBody(response);
         if (!response.isSuccessful()) {
-            if (streamed && body == null && response.getStatus() == 401) {
+            if (body == null && response.getStatus() == 401) {
                 // RFC 6749 section 5.2: a 401 from the token endpoint means invalid_client
                 throw new OAuthServiceException("HTTP 401: invalid_client - client authentication failed",
                         "invalid_client", "client authentication failed", null, 401, null);
             }
-            throw errorFrom(response, body);
+            throw errorFrom(response, body, sent);
         }
         if (body == null || body.get("access_token") == null) {
             throw new OAuthServiceException("The token response has no access_token", "invalid_response", null, null,
@@ -164,10 +181,11 @@ final class TokenClient implements TokenFetcher {
         }
     }
 
-    private static OAuthServiceException errorFrom(HttpResponse response, Map<String, Object> body) {
-        String error = body == null ? null : str(body.get("error"));
-        String description = body == null ? null : str(body.get("error_description"));
-        String uri = body == null ? null : str(body.get("error_uri"));
+    /** The server's error; its text cleaned of the credentials sent, in case the server echoes the request. */
+    private static OAuthServiceException errorFrom(HttpResponse response, Map<String, Object> body, List<String> sent) {
+        String error = body == null ? null : scrub(str(body.get("error")), sent);
+        String description = body == null ? null : scrub(str(body.get("error_description")), sent);
+        String uri = body == null ? null : scrub(str(body.get("error_uri")), sent);
         StringBuilder msg = new StringBuilder("HTTP ").append(response.getStatus());
         if (error != null) {
             msg.append(": ").append(Strings.safe(error));
@@ -175,7 +193,8 @@ final class TokenClient implements TokenFetcher {
                 msg.append(" - ").append(Strings.safe(description));
             }
         } else {
-            msg.append(": ").append(Strings.safe(truncate(response.getBody())));
+            // cleaned before cutting, so a credential cut in half can't slip through
+            msg.append(": ").append(Strings.safe(truncate(scrub(response.getBody(), sent))));
         }
         return new OAuthServiceException(msg.toString(), error, description, uri, response.getStatus(), null);
     }
@@ -210,6 +229,44 @@ final class TokenClient implements TokenFetcher {
             return parseForm(text);
         }
         return null;
+    }
+
+    /** The credentials in a token request: the Basic header's value and the credential form fields. */
+    private static List<String> credentialsIn(HttpRequest request) {
+        List<String> out = new ArrayList<String>();
+        String authorization = request.getHeaders().get("Authorization");
+        if (authorization != null && authorization.startsWith("Basic ")) {
+            out.add(authorization.substring(6));
+        }
+        byte[] body = request.getBody();
+        if (body != null) {
+            Map<String, Object> form = parseForm(new String(body, StandardCharsets.UTF_8));
+            for (String name : CREDENTIAL_FIELDS) {
+                if (form.get(name) != null) {
+                    out.add(form.get(name).toString());
+                }
+            }
+        }
+        return out;
+    }
+
+    /** {@code text} with every sent credential, as is or form-encoded, replaced by {@code ****}. */
+    static String scrub(String text, List<String> sent) {
+        if (text == null) {
+            return null;
+        }
+        String out = text;
+        for (String credential : sent) {
+            if (credential == null || credential.length() < MIN_SCRUB_LENGTH) {
+                continue;
+            }
+            out = out.replace(credential, "****");
+            String encoded = formEncode(credential);
+            if (!encoded.equals(credential)) {
+                out = out.replace(encoded, "****");
+            }
+        }
+        return out;
     }
 
     /** Parses {@code a=1&b=2}; the first occurrence of a name wins. */

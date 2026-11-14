@@ -113,7 +113,7 @@ class KeycloakTokenTest {
     void refreshTokenGrant() {
         String refreshToken = passwordGrantRefreshToken();
         AccessToken token = client.fetch(secretClient("password-client", "password-dev-secret").grant(Grant.REFRESH_TOKEN)
-                .refreshToken(refreshToken).build(), NO_SCOPES);
+                .refreshToken(refreshToken).subject("jane").build(), NO_SCOPES);
         assertEquals("jane", TestJwt.parse(token.getValue()).claims.get("preferred_username"));
         assertNotNull(token.getField("refresh_token"), "the new refresh token reaches the caller");
     }

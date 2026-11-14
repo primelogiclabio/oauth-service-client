@@ -11,7 +11,7 @@ The same content, with diagrams, is in [library-overview.html](library-overview.
 Your backend calls external services such as DocuSign, Salesforce, Jira, Vertex, Microsoft Entra ID apps, Okta, Auth0 and Oracle Integration, often once per customer (tenant). Each one wants an access token from its token endpoint. This library takes that work off the calling code:
 
 - It sends the token request for the configured **grant** (client credentials, JWT bearer or refresh token), with the right **client authentication**.
-- It caches tokens per **service, tenant and scope set** and renews them 5 minutes before they expire, one renewal at a time.
+- It caches tokens per **service, tenant, user and scope set** and renews them 5 minutes before they expire, one renewal at a time.
 - It sends your call to the service with the token attached and hands back every answer, whatever its status.
 - It retries only when that is safe, and reports every failure as one exception type with the server's OAuth error.
 
@@ -25,7 +25,7 @@ The core is generic: it implements the standards (RFC 6749, 7523, 8705) and hand
 |---|---|---|
 | `ClientInfo`, `ClientKey`, `Grant` | Done | Public. Builder that reports every problem at once; secrets never printed. |
 | Token requests | Done | All three grants and five client authentication methods; tested against a stub server and a live Keycloak. |
-| Token cache | Done | Per (service, tenant, scope set), on Caffeine 2.9.3. |
+| Token cache | Done | Per (service, tenant, user, scope set), on Caffeine 2.9.3. |
 | Scopes passed by the app | Done | Replace the `ClientInfo` defaults for that token. |
 | `OAuthServiceException` | Done | Public. |
 | `OAuthServiceClient`, `ServiceRequest`, `ServiceResponse` | Done | Public. `get`, `post`, `put`, `delete`, `request(ServiceRequest)` and `token()`; each call is sent once. |
@@ -89,7 +89,7 @@ try (OAuthServiceClient service = new OAuthServiceClient()) {
 - **Headers:** any valid header except `Authorization` (pass your own token instead) and the ones the JDK sets itself (`Host`, `Content-Length`, `Connection`, ...).
 - **The token:** the library's, from the cache, for the request's scopes or else the `ClientInfo` defaults; or your own, sent as `Bearer` as is, never cached or renewed. A request can't carry both scopes and your own token.
 - **The answer:** every status comes back as a `ServiceResponse`: `getStatus()`, `getHeader(name)`, `getBody()` (text by the Content-Type charset) and `getBodyBytes()` (a PDF arrives intact). Up to 16 MB.
-- **Sent once:** a call isn't retried yet, and a POST is sent in a mode that stops the JDK from silently sending it twice. Redirects aren't followed, so the token never goes to another host.
+- **Sent once:** a call isn't retried yet. A POST is sent in a mode that stops Java from sending it twice; Java may resend a GET, PUT or DELETE once if the connection fails before the answer. Redirects aren't followed, so the token never goes to another host.
 - **Checked first:** the URL must be https before any token is fetched; a bad URL or token gives an `IllegalArgumentException` that doesn't repeat the value.
 - **Client certificate:** presented on service calls too whenever the `ClientInfo` has one, for certificate-bound tokens.
 - **Lifetime:** `initialize` can be called again, for example after a secret rotation. Tokens are cached for the whole JVM (per class loader), so they outlive `close()` and instances with the same `ClientInfo` share them. One instance is thread-safe; after `close()` calls throw `IllegalStateException`.
@@ -97,7 +97,7 @@ try (OAuthServiceClient service = new OAuthServiceClient()) {
 ## One token, step by step
 
 1. A call on `OAuthServiceClient` (or `token()`) asks the cache for a token with the `ClientInfo` and, optionally, the request's scopes.
-2. The cache works out the scope set (the caller's, else the `ClientInfo` defaults) and looks up (service, tenant, scope set). A token is reused if the settings that shape it still match and it isn't within 5 minutes of expiry.
+2. The cache works out the scope set (the caller's, else the `ClientInfo` defaults) and looks up (service, tenant, user, scope set). A token is reused if the settings that shape it still match and it isn't within 5 minutes of expiry.
 3. Otherwise one thread claims the renewal; other threads either keep using the current token if it hasn't expired yet, or wait and share the result.
 4. `TokenClient` builds the form for the grant, adds client authentication, signs any assertion with a fresh `jti`, and attaches the client certificate if one is set.
 5. `HttpExecutor` checks the URL is https and the headers are clean, then sends. It resends only when the server certainly didn't process the request.
@@ -117,7 +117,7 @@ Build one with `ClientInfo.forTenant(service, tenant)` or `ClientInfo.global(ser
 | `clientSecret`, `clientSecretInBody` | secret clients | Sent in a Basic header by default, in the form when `clientSecretInBody(true)`. |
 | `signingKey` | JWT bearer, `private_key_jwt` | A `ClientKey` (RSA of 2048 bits or more, or EC on P-256/384/521), with an optional certificate and key ID. |
 | `clientCertificate` | mutual TLS | A `ClientKey` with a certificate; presented in the TLS handshake whenever set. |
-| `subject` | JWT bearer | The assertion's `sub` (a DocuSign user ID, a Salesforce username); defaults to the client ID. |
+| `subject` | JWT bearer; refresh token (required) | The user: for JWT bearer the assertion's `sub` (a DocuSign user ID, a Salesforce username), defaulting to the client ID; for a refresh token the user it belongs to, never sent. Part of the cache key. |
 | `assertionAudience` | JWT bearer (required); `private_key_jwt` (optional) | The assertion's `aud`; for a client assertion it defaults to the token URL. |
 | `assertionClaim(name, value)` | optional | Extra string claims, e.g. DocuSign's `scope`. `iss`, `sub`, `aud`, `exp`, `iat`, `nbf`, `jti` are refused. |
 | `refreshToken` | refresh token grant | The refresh token from an earlier consent. |
@@ -126,7 +126,7 @@ Build one with `ClientInfo.forTenant(service, tenant)` or `ClientInfo.global(ser
 | `introspectionUrl` | planned | Stored and checked now; used once introspection is built. |
 | `attribute(name, value)` | optional | The caller's own data (an account ID, a base URL); never sent. |
 
-Settings that don't fit the grant are refused rather than ignored: a `subject` outside JWT bearer, a `refreshToken` outside the refresh grant, a secret and a signing key both used to authenticate the client, an expired certificate.
+Settings that don't fit the grant are refused rather than ignored: a `subject` with client credentials, a refresh token without one, a `refreshToken` outside the refresh grant, a secret and a signing key both used to authenticate the client, an expired certificate.
 
 ## Choosing client authentication
 
@@ -200,7 +200,7 @@ shared by every caller holding it.
 
 For a token that lives less than 10 minutes, the margin is half its lifetime instead of 5 minutes.
 
-- **Key:** service, tenant (or global) and the scope set. The same scopes in another order share a token; different scopes get their own.
+- **Key:** service, tenant (or global), user and the scope set. The user is the `subject` of a JWT bearer or refresh token grant; client credentials have none, since their token serves the whole tenant. The same scopes in another order share a token; different scopes get their own.
 - **Settings must match:** a cached token is reused only while the settings that shape it are unchanged (token URL, grant, client ID, subject, audience, assertion claims, default scopes, token parameters, client certificate). A rotated secret, key or refresh token keeps it.
 - **One renewal per key:** through a map of in-flight renewals, not inside Caffeine's `compute`, so a slow token endpoint for one key never blocks others. Waiting threads share the new token or the failure.
 - **Failures:** if a renewal fails while the current token hasn't expired, the current token is returned and a warning logged.
@@ -240,18 +240,18 @@ Token requests are resent only when the server certainly didn't process them, be
 | 429, or 503 with `Retry-After` in seconds | Resent after that delay (at most 30 s) |
 | 500, 502, 504, a 503 without `Retry-After`, a read timeout | Not resent: reported |
 | TLS handshake failed | Not resent: it would fail the same way |
-| An OAuth error (400, 401) | Not resent: reported with its `error` |
+| An OAuth error (400, 401) | Not resent: reported with its `error` (a 401 as `invalid_client`) |
 
 | Limit | Value |
 |---|---|
 | Connect timeout / read timeout | 10 s / 30 s |
 | Whole call, all attempts and pauses | 60 s |
 | Retries | 2 (3 attempts) |
-| Token response size | 256 KB |
+| Token response size | 1 MB read, 256 KB used |
 | Service response size | 16 MB |
 | Requests in flight per host / worker threads | 32 / 64, per JVM |
 
-A refresh token request, and every POST to a service, is also sent in a mode that stops the JDK from silently resending it. Redirects are never followed. Service calls aren't retried yet. These limits are fixed for now; the outbound requests item makes them settings.
+Every token request, and every POST to a service, is also sent in a mode that stops Java from silently resending it. Redirects are never followed. Service calls aren't retried yet. These limits are fixed for now; the outbound requests item makes them settings.
 
 ## Errors
 
@@ -261,7 +261,7 @@ A refresh token request, and every POST to a service, is also sent in a mode tha
 | `IllegalStateException` | A call needs the library's token but `initialize` wasn't called; any call after `close()` | |
 | `OAuthServiceException` | No usable token: the server answered with an error, the answer isn't a token, the connection, TLS or deadline failed, the thread was interrupted. Or a service call got no answer: connection, TLS, timeout, a response over 16 MB | `getError()`, `getErrorDescription()`, `getErrorUri()`, `getHttpStatus()` (-1 without an answer); the message starts "Token request for service/tenant failed" or "Request failed: METHOD url" (query hidden) |
 
-Messages never contain secrets, tokens or assertions. Server text is cleaned of control characters (so it can't forge log lines) and a non-OAuth error body is cut to 500 characters. A response whose `access_token` or `token_type` isn't safe in an HTTP header is rejected.
+Messages never contain secrets, tokens or assertions. Server text is cleaned of control characters (so it can't forge log lines) and a non-OAuth error body is cut to 500 characters; credentials the server echoes back are replaced by `****`. A response whose `access_token` or `token_type` isn't safe in an HTTP header is rejected.
 
 ## ClientInfo per service
 
@@ -340,11 +340,23 @@ ClientInfo.global("bank")
         .build();
 ```
 
+## Security notes
+
+- **Who shares a token:** tokens are cached per service, tenant, user and scopes. A client credentials token serves the whole tenant (server to server). With the JWT bearer grant the user is the `subject`; with a refresh token the `subject` names the user the refresh token belongs to and is required, so one user never gets another user's token.
+- **Trusted configuration:** build `ClientInfo` from your own configuration, not from tenant input: a tenant that could set the token URL and audience could collect an assertion signed with your key. Anything in the same class loader that builds a `ClientInfo` with the same service, tenant, user, token URL and client ID gets the cached token, so don't share the jar between applications that don't trust each other (a server's shared `lib/` folder).
+- **TLS:** the library uses its own TLS context with the JVM's trust store (`cacerts`, or `javax.net.ssl.trustStore`), checks host names itself and presents no client certificate unless the `ClientInfo` has one. Settings other code makes JVM-wide (a socket factory or host name verifier that accepts anything, `javax.net.ssl.keyStore`) don't apply.
+- **Deadlines:** at the call deadline the request's sockets are closed, so a server that stalls the connection or the TLS handshake can't hold a thread or a host slot.
+- **At most once:** every token request and every POST to a service is sent in a mode that stops Java from resending it; a 401 answer's body can't be read in that mode, so a token endpoint's 401 is reported as `invalid_client`. Java may resend a GET, PUT or DELETE once when a connection fails before the answer.
+- **Java's Authenticator:** on Java 9 and later the JVM's default `java.net.Authenticator` is asked only for proxy logins, never for a service's 401 login challenge. On Java 8 that holds for POSTs only: an application on Java 8 with a default Authenticator should make it check `getRequestorType()`.
+- **Messages and logs:** never a secret, token or assertion; credentials a server echoes back in an error are replaced by `****`; URLs are shown without user info or query.
+- **Not yet:** a list of the hosts a `ClientInfo`'s token may go to: a URL taken from a response, such as Salesforce's `instance_url`, is used as given.
+
 ## Testing
 
 - `mvn verify` runs the unit tests on any JDK from 8 up; CI runs them on JDK 8 and 21, on Linux and Windows.
 - `TokenClientTest` sends real HTTPS requests to an in-process stub server that uses the test CA in `src/test/resources/tls`, including a server that requires a client certificate.
 - `OAuthServiceClientTest` makes service calls to the stub server: each method, headers, the token shared by instances, your own token, every status, binary bodies, the size limit, a client certificate; `ServiceRequestTest` checks every rule of a request.
+- `TransportSecurityTest` checks the transport's defences: a stalled TLS handshake ends at the deadline, a trust-all default installed JVM-wide isn't used, TLS sockets check host names, and a service's login challenge never reaches the JVM's Authenticator.
 - `KeycloakTokenTest` sends real token requests to a throwaway Keycloak 26.8.1: secret in a header and in the body, `private_key_jwt` with RSA and EC keys, mutual TLS with a certificate-bound token, the JWT bearer grant and the refresh token grant. The README section "Live check against Keycloak" has the commands.
 - Key tests are checked by mutation: each check breaks one rule in the code (for example, swap Basic and body, drop `x5t`, leave scopes out of the cache key) and confirms a test fails.
 

@@ -361,6 +361,59 @@ class TokenCacheTest {
         assertEquals("t1", cache.get(tenant("docusign", "acme"), new Fetcher(60)).getValue());
     }
 
+    @Test
+    void eachUserHasTheirOwnTokenButClientCredentialsServeTheTenant() {
+        Fetcher fetcher = new Fetcher(3600);
+        ClientInfo alice = base(ClientInfo.forTenant("jira", "acme")).grant(Grant.REFRESH_TOKEN)
+                .refreshToken("alice-refresh-token").subject("alice").build();
+        ClientInfo bob = base(ClientInfo.forTenant("jira", "acme")).grant(Grant.REFRESH_TOKEN)
+                .refreshToken("bob-refresh-token").subject("bob").build();
+        assertEquals("t1", cache.get(alice, fetcher).getValue());
+        assertEquals("t2", cache.get(bob, fetcher).getValue());
+        // side by side: neither replaces the other
+        assertEquals("t1", cache.get(alice, fetcher).getValue());
+        assertEquals("t2", cache.get(bob, fetcher).getValue());
+        assertEquals(2, fetcher.calls.get());
+
+        ClientInfo tenantWide = tenant("jira", "acme");
+        assertEquals("t3", cache.get(tenantWide, fetcher).getValue());
+        assertEquals("t3", cache.get(base(ClientInfo.forTenant("jira", "acme")).clientSecret("rotated").build(), fetcher)
+                .getValue());
+        assertEquals(3, cache.size());
+    }
+
+    @Test
+    void aWaiterWithOtherSettingsTriesItselfInsteadOfTakingTheirFailure() throws Exception {
+        final CountDownLatch started = new CountDownLatch(1);
+        final CountDownLatch gate = new CountDownLatch(1);
+        final AtomicInteger calls = new AtomicInteger();
+        TokenFetcher fetcher = (info, scopes) -> {
+            calls.incrementAndGet();
+            if (info.getTokenParameters().containsKey("broken")) {
+                started.countDown();
+                try {
+                    gate.await();
+                } catch (InterruptedException e) {
+                    throw new IllegalStateException(e);
+                }
+                throw new IllegalStateException("misconfigured");
+            }
+            return token("good", 3600);
+        };
+        ClientInfo broken = base(ClientInfo.forTenant("docusign", "acme")).tokenParameter("broken", "1").build();
+        ClientInfo fine = tenant("docusign", "acme");
+        Future<AccessToken> first = threads.submit(() -> cache.get(broken, fetcher));
+        assertTrue(started.await(10, TimeUnit.SECONDS));
+        ThreadCapture capture = new ThreadCapture();
+        Future<AccessToken> second = threads.submit(() -> capture.run(() -> cache.get(fine, fetcher)));
+        awaitBlocked(capture.thread());
+        gate.countDown();
+
+        assertTrue(causeOf(first) instanceof IllegalStateException);
+        assertEquals("good", second.get(10, TimeUnit.SECONDS).getValue());
+        assertEquals(2, calls.get());
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private static ClientInfo tenant(String service, String tenant) {

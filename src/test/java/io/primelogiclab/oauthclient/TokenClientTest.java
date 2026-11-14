@@ -141,7 +141,7 @@ class TokenClientTest {
         StubServer server = server(false);
         server.enqueue("/token", StubServer.token("tok", 3600));
         ClientInfo info = ClientInfo.forTenant("jira", "acme").tokenUrl(server.url("/token")).grant(Grant.REFRESH_TOKEN)
-                .clientId("id").clientSecret("s").clientSecretInBody(true).refreshToken("rt-1").build();
+                .clientId("id").clientSecret("s").clientSecretInBody(true).refreshToken("rt-1").subject("user-1").build();
 
         client().fetch(info, NO_SCOPES);
 
@@ -363,6 +363,105 @@ class TokenClientTest {
         }, HttpExecutor.Retry.ALWAYS));
         assertTrue(e.getMessage().contains("must be an https URL"), e.getMessage());
         assertTrue(server.requests().isEmpty());
+    }
+
+    @Test
+    void everyTokenRequestIsSentNotResendableWithALimitedAnswer() {
+        final List<HttpRequest> sent = new ArrayList<HttpRequest>();
+        HttpTransport recording = request -> {
+            sent.add(request);
+            return new HttpResponse(200, null, "{\"access_token\":\"tok\",\"expires_in\":3600}");
+        };
+        TokenClient client = new TokenClient(new HttpExecutor(recording, 0, Duration.ZERO, millis -> { }, null), time);
+
+        client.fetch(ClientInfo.global("svc").tokenUrl("https://idp.example.com/token").clientId("id").clientSecret(SECRET)
+                .build(), NO_SCOPES);
+        client.fetch(ClientInfo.global("okta").tokenUrl("https://idp.example.com/token").clientId("id")
+                .signingKey(Fixtures.rsaKey()).build(), NO_SCOPES);
+        client.fetch(ClientInfo.global("docusign").tokenUrl("https://idp.example.com/token").grant(Grant.JWT_BEARER)
+                .clientId("id").signingKey(Fixtures.rsaKey()).subject("u").assertionAudience("aud").build(), NO_SCOPES);
+
+        assertEquals(3, sent.size());
+        for (HttpRequest r : sent) {
+            assertFalse(r.isResendable(), r.toString());
+            assertEquals(TokenClient.MAX_RESPONSE_BYTES, r.getMaxResponseBytes());
+        }
+    }
+
+    @Test
+    void credentialsTheServerEchoesAreRemovedFromTheError() throws Exception {
+        String refreshToken = "rt-0123456789-secret";
+        StubServer server = server(false);
+        server.enqueue("/token", StubServer.json(400, "{\"error\":\"invalid_grant\",\"error_description\":\"refresh token "
+                + refreshToken + " is revoked\"}"));
+        server.enqueue("/token", new StubServer.Response(502, "text/plain", "echo: client_secret="
+                + TokenClient.formEncode(SECRET) + "&refresh_token=" + refreshToken));
+        ClientInfo info = ClientInfo.forTenant("jira", "acme").tokenUrl(server.url("/token")).grant(Grant.REFRESH_TOKEN)
+                .clientId("id").clientSecret(SECRET).clientSecretInBody(true).refreshToken(refreshToken).subject("u").build();
+
+        OAuthServiceException oauth = assertThrows(OAuthServiceException.class, () -> client().fetch(info, NO_SCOPES));
+        OAuthServiceException echo = assertThrows(OAuthServiceException.class, () -> client().fetch(info, NO_SCOPES));
+
+        assertEquals("refresh token **** is revoked", oauth.getErrorDescription());
+        assertFalse(oauth.getMessage().contains(refreshToken), oauth.getMessage());
+        assertFalse(echo.getMessage().contains(refreshToken), echo.getMessage());
+        assertFalse(echo.getMessage().contains(TokenClient.formEncode(SECRET)), echo.getMessage());
+        assertTrue(echo.getMessage().contains("client_secret=****"), echo.getMessage());
+    }
+
+    @Test
+    void aHugeRetryAfterIsNotTakenAsRetryAtOnce() throws Exception {
+        StubServer server = server(false);
+        // times 1000 this wraps around to -616 ms, which would mean "retry at once"
+        server.enqueue("/token", StubServer.json(429, "{}").header("Retry-After", "18446744073709551"));
+        server.enqueue("/token", StubServer.token("tok", 3600));
+        ClientInfo info = ClientInfo.global("svc").tokenUrl(server.url("/token")).clientId("id").clientSecret(SECRET).build();
+
+        // capped at 30 s, which doesn't fit in this client's 30 s call: the 429 is reported, not retried at once
+        OAuthServiceException e = assertThrows(OAuthServiceException.class, () -> client().fetch(info, NO_SCOPES));
+
+        assertEquals(429, e.getHttpStatus());
+        assertEquals(1, server.requests().size());
+        assertTrue(sleeps.isEmpty());
+    }
+
+    @Test
+    void debugLogsGetOnlyTheRequestsDescription() throws Exception {
+        final List<Object> parameters = Collections.synchronizedList(new ArrayList<Object>());
+        java.util.logging.Logger log = java.util.logging.Logger.getLogger(HttpExecutor.class.getName());
+        java.util.logging.Level level = log.getLevel();
+        java.util.logging.Handler handler = new java.util.logging.Handler() {
+            @Override
+            public void publish(java.util.logging.LogRecord record) {
+                if (record.getParameters() != null) {
+                    parameters.addAll(Arrays.asList(record.getParameters()));
+                }
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        log.addHandler(handler);
+        log.setLevel(java.util.logging.Level.FINE);
+        try {
+            StubServer server = server(false);
+            server.enqueue("/token", StubServer.json(429, "{}").header("Retry-After", "1"));
+            server.enqueue("/token", StubServer.token("tok", 3600));
+            client().fetch(ClientInfo.global("svc").tokenUrl(server.url("/token")).clientId("id").clientSecret(SECRET)
+                    .build(), NO_SCOPES);
+        } finally {
+            log.removeHandler(handler);
+            log.setLevel(level);
+        }
+        assertFalse(parameters.isEmpty());
+        for (Object p : parameters) {
+            assertFalse(p instanceof HttpRequest, "a request object was handed to the log");
+        }
     }
 
     // ------------------------------------------------------------------ helpers

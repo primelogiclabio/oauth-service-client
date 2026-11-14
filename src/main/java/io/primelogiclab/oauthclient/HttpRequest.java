@@ -141,10 +141,11 @@ final class HttpRequest {
             if (at >= 0) {
                 int slash = rest.indexOf('/');
                 int q = firstOf(rest, 0);
-                // an '@' after a path and '?' is query text (e.g. ?mail=a@b), unless the part before the
-                // path looks like user:password; otherwise all up to the last '@' is user info
-                boolean queryAt = slash >= 0 && q >= 0 && slash < q && q < at
-                        && !looksLikeUserInfo(rest.substring(0, slash));
+                // an '@' after the '?' that ends the host (or the host and path) is query text (e.g.
+                // ?mail=a@b), unless the part before it looks like user:password; otherwise all up to the
+                // last '@' is user info
+                int hostEnd = slash >= 0 && slash < q ? slash : q;
+                boolean queryAt = q >= 0 && q < at && !looksLikeUserInfo(rest.substring(0, hostEnd));
                 int cutAt = queryAt ? rest.lastIndexOf('@', q) : at; // user info, if any, ends before the query
                 if (cutAt >= 0) {
                     // an '@' after the first '/' is ambiguous (unencoded password or path): mark the cut, so

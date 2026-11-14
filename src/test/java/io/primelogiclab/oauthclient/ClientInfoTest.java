@@ -189,6 +189,7 @@ class ClientInfoTest {
                 .clientId("client")
                 .clientSecret("secret")
                 .refreshToken("refresh")
+                .subject("user-1")
                 .scope("read:jira-work", "offline_access")
                 .build();
         assertEquals("refresh", confidential.getRefreshToken());
@@ -196,8 +197,27 @@ class ClientInfoTest {
         assertEquals(ClientAuthentication.CLIENT_SECRET_BASIC, confidential.clientAuthentication());
 
         ClientInfo publicClient = ClientInfo.forTenant("jira", "acme")
-                .tokenUrl(TOKEN_URL).grant(Grant.REFRESH_TOKEN).clientId("client").refreshToken("refresh").build();
+                .tokenUrl(TOKEN_URL).grant(Grant.REFRESH_TOKEN).clientId("client").refreshToken("refresh")
+                .subject("user-1").build();
         assertEquals(ClientAuthentication.NONE, publicClient.clientAuthentication());
+    }
+
+    @Test
+    void refreshTokenGrantNeedsTheUser() {
+        assertProblem(ClientInfo.forTenant("jira", "acme").tokenUrl(TOKEN_URL).grant(Grant.REFRESH_TOKEN)
+                .clientId("client").refreshToken("refresh"), "REFRESH_TOKEN needs a subject");
+    }
+
+    @Test
+    void theUserIsPartOfTheCacheKeyExceptForClientCredentials() {
+        ClientInfo refresh = ClientInfo.forTenant("jira", "acme").tokenUrl(TOKEN_URL).grant(Grant.REFRESH_TOKEN)
+                .clientId("client").refreshToken("refresh").subject("alice").build();
+        ClientInfo bearer = signingClient().subject("bob").build();
+        ClientInfo bearerAsClient = signingClient().subject(null).build();
+        assertEquals("alice", refresh.cacheUser());
+        assertEquals("bob", bearer.cacheUser());
+        assertNull(bearerAsClient.cacheUser());
+        assertNull(secretClient().build().cacheUser());
     }
 
     @Test
@@ -283,9 +303,9 @@ class ClientInfoTest {
     @Test
     void rejectsSettingsTheGrantDoesNotUse() {
         assertProblem(secretClient().signingKey(Fixtures.rsaKey()), "set clientSecret or signingKey, not both");
-        assertProblem(secretClient().grant(Grant.REFRESH_TOKEN).refreshToken("r").signingKey(Fixtures.rsaKey()),
+        assertProblem(secretClient().grant(Grant.REFRESH_TOKEN).refreshToken("r").subject("u").signingKey(Fixtures.rsaKey()),
                 "set clientSecret or signingKey, not both");
-        assertProblem(secretClient().subject("user"), "subject is only used with JWT_BEARER");
+        assertProblem(secretClient().subject("user"), "subject is only used with JWT_BEARER and REFRESH_TOKEN");
         assertProblem(secretClient().assertionAudience("aud"), "assertionAudience is only used with a signingKey");
         assertProblem(secretClient().refreshToken("r"), "refreshToken is only used with REFRESH_TOKEN");
         assertProblem(ClientInfo.global("idp").tokenUrl(TOKEN_URL).grant(Grant.JWT_BEARER).clientId("client")
@@ -415,6 +435,7 @@ class ClientInfoTest {
                 .clientCertificate(key)
                 .clientSecret("the-client-secret")
                 .refreshToken("the-refresh-token")
+                .subject("the-user")
                 .tokenParameter("resource", "param-value")
                 .attribute("accountId", "attribute-value")
                 .scope("a")

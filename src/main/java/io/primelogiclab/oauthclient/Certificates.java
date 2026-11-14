@@ -41,16 +41,17 @@ final class Certificates {
         }
     }
 
-    /** The first alias holding a private key, or {@code null} if there is none. */
-    static String firstKeyAlias(KeyStore ks) throws GeneralSecurityException {
+    /** The aliases holding a private key, in the keystore's order. */
+    static List<String> keyAliases(KeyStore ks) throws GeneralSecurityException {
+        List<String> out = new ArrayList<String>();
         Enumeration<String> aliases = ks.aliases();
         while (aliases.hasMoreElements()) {
             String a = aliases.nextElement();
             if (ks.isKeyEntry(a)) {
-                return a;
+                out.add(a);
             }
         }
-        return null;
+        return out;
     }
 
     /** Fails if {@code key} is not the private key for {@code cert}. */

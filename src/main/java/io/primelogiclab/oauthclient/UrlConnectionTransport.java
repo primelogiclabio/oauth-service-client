@@ -5,10 +5,18 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InterruptedIOException;
 import java.io.OutputStream;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.net.Authenticator;
 import java.net.HttpURLConnection;
+import java.net.InetAddress;
+import java.net.PasswordAuthentication;
+import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
@@ -22,7 +30,11 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.SSLSession;
+import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManager;
 
@@ -168,12 +180,14 @@ final class UrlConnectionTransport implements HttpTransport {
     private static final int SENDING = 1;
     private static final int ABANDONED = 2;
 
-    /** One request's shared state: its phase, deadline and connection, so the caller can end it. */
+    /** One request's shared state: its phase, deadline, connection and sockets, so the caller can end it. */
     private static final class Call {
         final AtomicInteger phase = new AtomicInteger(CONNECTING);
         final long deadlineNanos; // 0 = none
         volatile boolean expired;
         volatile HttpURLConnection connection;
+        /** The request's sockets: closing them also ends a TCP connect in progress, which disconnect() can't reach. */
+        private final List<Socket> sockets = new ArrayList<Socket>();
 
         Call(long deadlineNanos) {
             this.deadlineNanos = deadlineNanos;
@@ -181,6 +195,21 @@ final class UrlConnectionTransport implements HttpTransport {
 
         boolean pastDeadline() {
             return expired || (deadlineNanos != 0 && System.nanoTime() - deadlineNanos > 0);
+        }
+
+        /** Remembers a socket of this request; one made after the request was given up is closed at once. */
+        <S extends Socket> S track(S socket) {
+            boolean closeNow;
+            synchronized (sockets) {
+                closeNow = expired;
+                if (!closeNow) {
+                    sockets.add(socket);
+                }
+            }
+            if (closeNow) {
+                closeQuietly(socket);
+            }
+            return socket;
         }
 
         /**
@@ -191,14 +220,24 @@ final class UrlConnectionTransport implements HttpTransport {
          * @return true if nothing of the request was sent
          */
         boolean abandon() {
-            expired = true;
+            final List<Socket> open;
+            synchronized (sockets) {
+                expired = true;
+                open = new ArrayList<Socket>(sockets);
+            }
             boolean notSent = phase.compareAndSet(CONNECTING, ABANDONED) || phase.get() == ABANDONED;
             final HttpURLConnection c = connection;
-            if (c != null) {
+            if (c != null || !open.isEmpty()) {
                 daemon(new Runnable() {
                     @Override
                     public void run() {
-                        c.disconnect();
+                        // the sockets first: during the TCP connect disconnect() does nothing
+                        for (Socket socket : open) {
+                            closeQuietly(socket);
+                        }
+                        if (c != null) {
+                            c.disconnect();
+                        }
                     }
                 }, "oauth-service-client-http-close").start();
             }
@@ -211,7 +250,11 @@ final class UrlConnectionTransport implements HttpTransport {
     private final long requestTimeoutMs;
     /** CAs to trust instead of the JVM's, or {@code null} for the JVM default. */
     private final TrustManager[] trustManagers;
-    /** Socket factory for requests without a client certificate, or {@code null} for the JVM default. */
+    /**
+     * Socket factory for requests without a client certificate: the library's own TLS context with the JVM's
+     * trust store (or {@code trustManagers}), never the JVM-wide default factory, which other code may have
+     * replaced (with one that trusts everything) and which presents {@code javax.net.ssl.keyStore}'s key.
+     */
     private final SSLSocketFactory defaultSocketFactory;
 
     /**
@@ -226,7 +269,7 @@ final class UrlConnectionTransport implements HttpTransport {
         this.readTimeoutMs = toMillis(readTimeout);
         this.requestTimeoutMs = requestTimeout == null ? 0 : Math.max(1, requestTimeout.toMillis());
         this.trustManagers = trustManagers == null ? null : trustManagers.clone();
-        this.defaultSocketFactory = trustManagers == null ? null : Tls.socketFactory(null, this.trustManagers);
+        this.defaultSocketFactory = Tls.socketFactory(null, this.trustManagers);
     }
 
     @Override
@@ -430,14 +473,16 @@ final class UrlConnectionTransport implements HttpTransport {
 
     private HttpResponse send(HttpURLConnection conn, URL url, HttpRequest request, Call call) throws IOException {
         if (conn instanceof HttpsURLConnection) {
+            HttpsURLConnection https = (HttpsURLConnection) conn;
             // a new factory per client certificate: the JDK reuses a kept-alive connection only with the
             // same factory, so a connection made with one tenant's certificate never carries another's request
             SSLSocketFactory factory = request.getClientCertificate() != null
                     ? Tls.socketFactory(request.getClientCertificate(), trustManagers) : defaultSocketFactory;
-            if (factory != null) {
-                ((HttpsURLConnection) conn).setSSLSocketFactory(factory);
-            }
+            https.setSSLSocketFactory(new CallSocketFactory(factory, call));
+            // the JDK's own host name check decides; a lenient JVM-wide default verifier is never asked
+            https.setHostnameVerifier(NO_EXCEPTIONS);
         }
+        refuseServerAuthentication(conn);
         conn.setConnectTimeout(connectTimeoutMs);
         conn.setReadTimeout(readTimeoutMs);
         conn.setInstanceFollowRedirects(false);
@@ -502,6 +547,143 @@ final class UrlConnectionTransport implements HttpTransport {
             return buf.toByteArray();
         } finally {
             in.close();
+        }
+    }
+
+    /** Never accepts a host name the certificate doesn't match: only the JDK's own check (HTTPS identification) counts. */
+    private static final HostnameVerifier NO_EXCEPTIONS = new HostnameVerifier() {
+        @Override
+        public boolean verify(String hostname, SSLSession session) {
+            return false;
+        }
+    };
+
+    /**
+     * Answers proxy logins from the JVM's default {@link Authenticator} and nothing else: without it, a 401
+     * with {@code WWW-Authenticate: Basic} from a service would make the JDK ask the application's
+     * Authenticator and send what it answers (for example the proxy password) to the service.
+     */
+    private static final Authenticator PROXY_ONLY = new Authenticator() {
+        @Override
+        protected PasswordAuthentication getPasswordAuthentication() {
+            if (getRequestorType() != RequestorType.PROXY) {
+                return null;
+            }
+            return Authenticator.requestPasswordAuthentication(getRequestingHost(), getRequestingSite(),
+                    getRequestingPort(), getRequestingProtocol(), getRequestingPrompt(), getRequestingScheme(),
+                    getRequestingURL(), RequestorType.PROXY);
+        }
+    };
+
+    /** {@code HttpURLConnection.setAuthenticator}, Java 9 and later; {@code null} on Java 8. */
+    private static final Method SET_AUTHENTICATOR = setAuthenticatorMethod();
+
+    private static Method setAuthenticatorMethod() {
+        try {
+            return HttpURLConnection.class.getMethod("setAuthenticator", Authenticator.class);
+        } catch (NoSuchMethodException | RuntimeException e) {
+            return null; // Java 8: no per-connection Authenticator
+        }
+    }
+
+    /**
+     * Keeps the JVM's default Authenticator away from server logins on this connection (Java 9 and later).
+     * On Java 8 only the fixed-length requests (every POST) are safe: the JDK doesn't answer a 401 for them.
+     */
+    private static void refuseServerAuthentication(HttpURLConnection conn) throws IOException {
+        if (SET_AUTHENTICATOR == null) {
+            return;
+        }
+        try {
+            SET_AUTHENTICATOR.invoke(conn, PROXY_ONLY);
+        } catch (IllegalAccessException | InvocationTargetException | RuntimeException e) {
+            throw new RequestNotSentException("Cannot keep the JVM's Authenticator away from this request: " + e, e);
+        }
+    }
+
+    static boolean refusesServerAuthentication() {
+        return SET_AUTHENTICATOR != null;
+    }
+
+    private static void closeQuietly(Socket socket) {
+        try {
+            socket.close();
+        } catch (IOException | RuntimeException ignored) {
+            // closing to give up: nothing more to do
+        }
+    }
+
+    /**
+     * Makes this request's sockets through the TLS factory and hands each to the {@link Call}, so the call
+     * can close them at its deadline. The TCP socket is a plain one the JDK connects and then layers TLS
+     * over: closing it ends a connect or TLS handshake in progress at once. Every TLS socket checks the host name itself (HTTPS
+     * endpoint identification).
+     */
+    static final class CallSocketFactory extends SSLSocketFactory {
+
+        private final SSLSocketFactory tls;
+        private final Call call;
+
+        CallSocketFactory(SSLSocketFactory tls, Call call) {
+            this.tls = tls;
+            this.call = call;
+        }
+
+        /** For tests: a factory whose sockets nothing tracks. */
+        static CallSocketFactory untracked(SSLSocketFactory tls) {
+            return new CallSocketFactory(tls, new Call(0));
+        }
+
+        @Override
+        public String[] getDefaultCipherSuites() {
+            return tls.getDefaultCipherSuites();
+        }
+
+        @Override
+        public String[] getSupportedCipherSuites() {
+            return tls.getSupportedCipherSuites();
+        }
+
+        /** The unconnected TCP socket the JDK connects (and tunnels through a proxy) before layering TLS over it. */
+        @Override
+        public Socket createSocket() {
+            return call.track(new Socket());
+        }
+
+        @Override
+        public Socket createSocket(Socket s, String host, int port, boolean autoClose) throws IOException {
+            call.track(s);
+            return call.track(identifyHost(tls.createSocket(s, host, port, autoClose)));
+        }
+
+        @Override
+        public Socket createSocket(String host, int port) throws IOException {
+            return call.track(identifyHost(tls.createSocket(host, port)));
+        }
+
+        @Override
+        public Socket createSocket(String host, int port, InetAddress localHost, int localPort) throws IOException {
+            return call.track(identifyHost(tls.createSocket(host, port, localHost, localPort)));
+        }
+
+        @Override
+        public Socket createSocket(InetAddress host, int port) throws IOException {
+            return call.track(identifyHost(tls.createSocket(host, port)));
+        }
+
+        @Override
+        public Socket createSocket(InetAddress address, int port, InetAddress localAddress, int localPort) throws IOException {
+            return call.track(identifyHost(tls.createSocket(address, port, localAddress, localPort)));
+        }
+
+        private static Socket identifyHost(Socket socket) {
+            if (socket instanceof SSLSocket) {
+                SSLSocket ssl = (SSLSocket) socket;
+                SSLParameters params = ssl.getSSLParameters();
+                params.setEndpointIdentificationAlgorithm("HTTPS");
+                ssl.setSSLParameters(params);
+            }
+            return socket;
         }
     }
 

@@ -53,6 +53,19 @@ class ClientKeyTest {
     }
 
     @Test
+    void aStoreWithSeveralKeysNeedsTheAlias() throws Exception {
+        ClientKey rsa = Fixtures.clientWithChain();
+        ClientKey ec = Fixtures.selfSignedEc();
+        KeyStore ks = KeyStore.getInstance("PKCS12");
+        ks.load(null, null);
+        ks.setKeyEntry("rsa", rsa.getPrivateKey(), Fixtures.PASSWORD, rsa.getCertificateChain().toArray(new X509Certificate[0]));
+        ks.setKeyEntry("ec", ec.getPrivateKey(), Fixtures.PASSWORD, ec.getCertificateChain().toArray(new X509Certificate[0]));
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> ClientKey.fromKeyStore(ks, Fixtures.PASSWORD));
+        assertTrue(e.getMessage().contains("2 private key entries; pass the alias"), e.getMessage());
+    }
+
+    @Test
     void aliasSelectsTheEntryWhenTheStoreHoldsSeveral() throws Exception {
         ClientKey rsa = Fixtures.clientWithChain();
         ClientKey ec = Fixtures.selfSignedEc();

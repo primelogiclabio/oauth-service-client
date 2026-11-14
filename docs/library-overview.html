@@ -149,6 +149,7 @@ main [id]{scroll-margin-top:64px}
       <li><a href="#retries">Retries and timeouts</a></li>
       <li><a href="#errors">Errors</a></li>
       <li><a href="#examples">ClientInfo per service</a></li>
+      <li><a href="#security">Security notes</a></li>
       <li><a href="#testing">Testing</a></li>
       <li><a href="#limits">Planned and out of scope</a></li>
       <li><a href="#references">References</a></li>
@@ -176,7 +177,7 @@ main [id]{scroll-margin-top:64px}
         <p>Your backend calls external services such as DocuSign, Salesforce, Jira, Vertex, Microsoft Entra ID apps, Okta, Auth0 and Oracle Integration, often once per customer (tenant). Each one wants an access token from its token endpoint. This library takes that work off the calling code:</p>
         <ul>
           <li>It sends the token request for the configured <strong>grant</strong> (client credentials, JWT bearer or refresh token), with the right <strong>client authentication</strong>.</li>
-          <li>It caches tokens per <strong>service, tenant and scope set</strong> and renews them 5 minutes before they expire, one renewal at a time.</li>
+          <li>It caches tokens per <strong>service, tenant, user and scope set</strong> and renews them 5 minutes before they expire, one renewal at a time.</li>
           <li>It sends your call to the service with the token attached and hands back every answer, whatever its status.</li>
           <li>It retries only when that is safe, and reports every failure as one exception type with the server's OAuth error.</li>
         </ul>
@@ -191,7 +192,7 @@ main [id]{scroll-margin-top:64px}
           <tbody>
             <tr><td><code>ClientInfo</code>, <code>ClientKey</code>, <code>Grant</code></td><td><span class="pill ok">Done</span></td><td>Public. Builder that reports every problem at once; secrets never printed.</td></tr>
             <tr><td>Token requests</td><td><span class="pill ok">Done</span></td><td>All three grants and five client authentication methods; tested against a stub server and a live Keycloak.</td></tr>
-            <tr><td>Token cache</td><td><span class="pill ok">Done</span></td><td>Per (service, tenant, scope set), on Caffeine 2.9.3.</td></tr>
+            <tr><td>Token cache</td><td><span class="pill ok">Done</span></td><td>Per (service, tenant, user, scope set), on Caffeine 2.9.3.</td></tr>
             <tr><td>Scopes passed by the app</td><td><span class="pill ok">Done</span></td><td>Replace the <code>ClientInfo</code> defaults for that token.</td></tr>
             <tr><td><code>OAuthServiceException</code></td><td><span class="pill ok">Done</span></td><td>Public.</td></tr>
             <tr><td><code>OAuthServiceClient</code>, <code>ServiceRequest</code>, <code>ServiceResponse</code></td><td><span class="pill ok">Done</span></td><td>Public. <code>get</code>, <code>post</code>, <code>put</code>, <code>delete</code>, <code>request(ServiceRequest)</code> and <code>token()</code>; each call is sent once.</td></tr>
@@ -290,7 +291,7 @@ main [id]{scroll-margin-top:64px}
           <li><strong>Headers:</strong> any valid header except <code>Authorization</code> (pass your own token instead) and the ones the JDK sets itself (<code>Host</code>, <code>Content-Length</code>, <code>Connection</code>, ...).</li>
           <li><strong>The token:</strong> the library's, from the cache, for the request's scopes or else the <code>ClientInfo</code> defaults; or your own, sent as <code>Bearer</code> as is, never cached or renewed. A request can't carry both scopes and your own token.</li>
           <li><strong>The answer:</strong> every status comes back as a <code>ServiceResponse</code>: <code>getStatus()</code>, <code>getHeader(name)</code>, <code>getBody()</code> (text by the Content-Type charset) and <code>getBodyBytes()</code> (a PDF arrives intact). Up to 16 MB.</li>
-          <li><strong>Sent once:</strong> a call isn't retried yet, and a POST is sent in a mode that stops the JDK from silently sending it twice. Redirects aren't followed, so the token never goes to another host.</li>
+          <li><strong>Sent once:</strong> a call isn't retried yet. A POST is sent in a mode that stops Java from sending it twice; Java may resend a GET, PUT or DELETE once if the connection fails before the answer. Redirects aren't followed, so the token never goes to another host.</li>
           <li><strong>Checked first:</strong> the URL must be https before any token is fetched; a bad URL or token gives an <code>IllegalArgumentException</code> that doesn't repeat the value.</li>
           <li><strong>Client certificate:</strong> presented on service calls too whenever the <code>ClientInfo</code> has one, for certificate-bound tokens.</li>
           <li><strong>Lifetime:</strong> <code>initialize</code> can be called again, for example after a secret rotation. Tokens are cached for the whole JVM (per class loader), so they outlive <code>close()</code> and instances with the same <code>ClientInfo</code> share them. One instance is thread-safe; after <code>close()</code> calls throw <code>IllegalStateException</code>.</li>
@@ -301,7 +302,7 @@ main [id]{scroll-margin-top:64px}
         <h2 id="one-token">One token, step by step</h2>
         <ol>
           <li>A call on <code>OAuthServiceClient</code> (or <code>token()</code>) asks the cache for a token with the <code>ClientInfo</code> and, optionally, the request's scopes.</li>
-          <li>The cache works out the scope set (the caller's, else the <code>ClientInfo</code> defaults) and looks up (service, tenant, scope set). A token is reused if the settings that shape it still match and it isn't within 5 minutes of expiry.</li>
+          <li>The cache works out the scope set (the caller's, else the <code>ClientInfo</code> defaults) and looks up (service, tenant, user, scope set). A token is reused if the settings that shape it still match and it isn't within 5 minutes of expiry.</li>
           <li>Otherwise one thread claims the renewal; other threads either keep using the current token if it hasn't expired yet, or wait and share the result.</li>
           <li><code>TokenClient</code> builds the form for the grant, adds client authentication, signs any assertion with a fresh <code>jti</code>, and attaches the client certificate if one is set.</li>
           <li><code>HttpExecutor</code> checks the URL is https and the headers are clean, then sends. It resends only when the server certainly didn't process the request.</li>
@@ -323,7 +324,7 @@ main [id]{scroll-margin-top:64px}
             <tr><td><code>clientSecret</code>, <code>clientSecretInBody</code></td><td>secret clients</td><td>Sent in a Basic header by default, in the form when <code>clientSecretInBody(true)</code>.</td></tr>
             <tr><td><code>signingKey</code></td><td>JWT bearer, <code>private_key_jwt</code></td><td>A <code>ClientKey</code> (RSA of 2048 bits or more, or EC on P-256/384/521), with an optional certificate and key ID.</td></tr>
             <tr><td><code>clientCertificate</code></td><td>mutual TLS</td><td>A <code>ClientKey</code> with a certificate; presented in the TLS handshake whenever set.</td></tr>
-            <tr><td><code>subject</code></td><td>JWT bearer</td><td>The assertion's <code>sub</code> (a DocuSign user ID, a Salesforce username); defaults to the client ID.</td></tr>
+            <tr><td><code>subject</code></td><td>JWT bearer; refresh token (required)</td><td>The user: for JWT bearer the assertion's <code>sub</code> (a DocuSign user ID, a Salesforce username), defaulting to the client ID; for a refresh token the user it belongs to, never sent. Part of the cache key.</td></tr>
             <tr><td><code>assertionAudience</code></td><td>JWT bearer (required); <code>private_key_jwt</code> (optional)</td><td>The assertion's <code>aud</code>; for a client assertion it defaults to the token URL.</td></tr>
             <tr><td><code>assertionClaim(name, value)</code></td><td>optional</td><td>Extra string claims, e.g. DocuSign's <code>scope</code>. <code>iss</code>, <code>sub</code>, <code>aud</code>, <code>exp</code>, <code>iat</code>, <code>nbf</code>, <code>jti</code> are refused.</td></tr>
             <tr><td><code>refreshToken</code></td><td>refresh token grant</td><td>The refresh token from an earlier consent.</td></tr>
@@ -333,7 +334,7 @@ main [id]{scroll-margin-top:64px}
             <tr><td><code>attribute(name, value)</code></td><td>optional</td><td>The caller's own data (an account ID, a base URL); never sent.</td></tr>
           </tbody>
         </table></div>
-        <p>Settings that don't fit the grant are refused rather than ignored: a <code>subject</code> outside JWT bearer, a <code>refreshToken</code> outside the refresh grant, a secret and a signing key both used to authenticate the client, an expired certificate.</p>
+        <p>Settings that don't fit the grant are refused rather than ignored: a <code>subject</code> with client credentials, a refresh token without one, a <code>refreshToken</code> outside the refresh grant, a secret and a signing key both used to authenticate the client, an expired certificate.</p>
       </section>
 
       <section aria-labelledby="client-auth">
@@ -441,7 +442,7 @@ grant_type=client_credentials&amp;scope=payroll-calculation&amp;audience=verx%3A
           <figcaption>For a token that lives less than 10 minutes, the margin is half its lifetime instead of 5 minutes.</figcaption>
         </figure>
         <ul>
-          <li><strong>Key:</strong> service, tenant (or global) and the scope set. The same scopes in another order share a token; different scopes get their own.</li>
+          <li><strong>Key:</strong> service, tenant (or global), user and the scope set. The user is the <code>subject</code> of a JWT bearer or refresh token grant; client credentials have none, since their token serves the whole tenant. The same scopes in another order share a token; different scopes get their own.</li>
           <li><strong>Settings must match:</strong> a cached token is reused only while the settings that shape it are unchanged (token URL, grant, client ID, subject, audience, assertion claims, default scopes, token parameters, client certificate). A rotated secret, key or refresh token keeps it.</li>
           <li><strong>One renewal per key:</strong> through a map of in-flight renewals, not inside Caffeine's <code>compute</code>, so a slow token endpoint for one key never blocks others. Waiting threads share the new token or the failure.</li>
           <li><strong>Failures:</strong> if a renewal fails while the current token hasn't expired, the current token is returned and a warning logged.</li>
@@ -484,7 +485,7 @@ AccessToken token = service.token("https://graph.microsoft.com/.default");   // 
             <tr><td>429, or 503 with <code>Retry-After</code> in seconds</td><td>Resent after that delay (at most 30 s)</td></tr>
             <tr><td>500, 502, 504, a 503 without <code>Retry-After</code>, a read timeout</td><td>Not resent: reported</td></tr>
             <tr><td>TLS handshake failed</td><td>Not resent: it would fail the same way</td></tr>
-            <tr><td>An OAuth error (400, 401)</td><td>Not resent: reported with its <code>error</code></td></tr>
+            <tr><td>An OAuth error (400, 401)</td><td>Not resent: reported with its <code>error</code> (a 401 as <code>invalid_client</code>)</td></tr>
           </tbody>
         </table></div>
         <div class="table-wrap"><table>
@@ -493,12 +494,12 @@ AccessToken token = service.token("https://graph.microsoft.com/.default");   // 
             <tr><td>Connect timeout / read timeout</td><td>10 s / 30 s</td></tr>
             <tr><td>Whole call, all attempts and pauses</td><td>60 s</td></tr>
             <tr><td>Retries</td><td>2 (3 attempts)</td></tr>
-            <tr><td>Token response size</td><td>256 KB</td></tr>
+            <tr><td>Token response size</td><td>1 MB read, 256 KB used</td></tr>
             <tr><td>Service response size</td><td>16 MB</td></tr>
             <tr><td>Requests in flight per host / worker threads</td><td>32 / 64, per JVM</td></tr>
           </tbody>
         </table></div>
-        <p>A refresh token request, and every POST to a service, is also sent in a mode that stops the JDK from silently resending it. Redirects are never followed. Service calls aren't retried yet. These limits are fixed for now; the outbound requests item makes them settings.</p>
+        <p>Every token request, and every POST to a service, is also sent in a mode that stops Java from silently resending it. Redirects are never followed. Service calls aren't retried yet. These limits are fixed for now; the outbound requests item makes them settings.</p>
       </section>
 
       <section aria-labelledby="errors">
@@ -511,7 +512,7 @@ AccessToken token = service.token("https://graph.microsoft.com/.default");   // 
             <tr><td><code>OAuthServiceException</code></td><td>No usable token: the server answered with an error, the answer isn't a token, the connection, TLS or deadline failed, the thread was interrupted. Or a service call got no answer: connection, TLS, timeout, a response over 16 MB</td><td><code>getError()</code>, <code>getErrorDescription()</code>, <code>getErrorUri()</code>, <code>getHttpStatus()</code> (-1 without an answer); the message starts "Token request for service/tenant failed" or "Request failed: METHOD url" (query hidden)</td></tr>
           </tbody>
         </table></div>
-        <p>Messages never contain secrets, tokens or assertions. Server text is cleaned of control characters (so it can't forge log lines) and a non-OAuth error body is cut to 500 characters. A response whose <code>access_token</code> or <code>token_type</code> isn't safe in an HTTP header is rejected.</p>
+        <p>Messages never contain secrets, tokens or assertions. Server text is cleaned of control characters (so it can't forge log lines) and a non-OAuth error body is cut to 500 characters; credentials the server echoes back are replaced by <code>****</code>. A response whose <code>access_token</code> or <code>token_type</code> isn't safe in an HTTP header is rejected.</p>
       </section>
 
       <section aria-labelledby="examples">
@@ -589,12 +590,27 @@ ClientInfo.global("bank")
         .build();</code></pre>
       </section>
 
+      <section aria-labelledby="security">
+        <h2 id="security">Security notes</h2>
+        <ul>
+          <li><strong>Who shares a token:</strong> tokens are cached per service, tenant, user and scopes. A client credentials token serves the whole tenant (server to server). With the JWT bearer grant the user is the <code>subject</code>; with a refresh token the <code>subject</code> names the user the refresh token belongs to and is required, so one user never gets another user's token.</li>
+          <li><strong>Trusted configuration:</strong> build <code>ClientInfo</code> from your own configuration, not from tenant input: a tenant that could set the token URL and audience could collect an assertion signed with your key. Anything in the same class loader that builds a <code>ClientInfo</code> with the same service, tenant, user, token URL and client ID gets the cached token, so don't share the jar between applications that don't trust each other (a server's shared <code>lib/</code> folder).</li>
+          <li><strong>TLS:</strong> the library uses its own TLS context with the JVM's trust store (<code>cacerts</code>, or <code>javax.net.ssl.trustStore</code>), checks host names itself and presents no client certificate unless the <code>ClientInfo</code> has one. Settings other code makes JVM-wide (a socket factory or host name verifier that accepts anything, <code>javax.net.ssl.keyStore</code>) don't apply.</li>
+          <li><strong>Deadlines:</strong> at the call deadline the request's sockets are closed, so a server that stalls the connection or the TLS handshake can't hold a thread or a host slot.</li>
+          <li><strong>At most once:</strong> every token request and every POST to a service is sent in a mode that stops Java from resending it; a 401 answer's body can't be read in that mode, so a token endpoint's 401 is reported as <code>invalid_client</code>. Java may resend a GET, PUT or DELETE once when a connection fails before the answer.</li>
+          <li><strong>Java's Authenticator:</strong> on Java 9 and later the JVM's default <code>java.net.Authenticator</code> is asked only for proxy logins, never for a service's 401 login challenge. On Java 8 that holds for POSTs only: an application on Java 8 with a default Authenticator should make it check <code>getRequestorType()</code>.</li>
+          <li><strong>Messages and logs:</strong> never a secret, token or assertion; credentials a server echoes back in an error are replaced by <code>****</code>; URLs are shown without user info or query.</li>
+          <li><strong>Not yet:</strong> a list of the hosts a <code>ClientInfo</code>'s token may go to: a URL taken from a response, such as Salesforce's <code>instance_url</code>, is used as given.</li>
+        </ul>
+      </section>
+
       <section aria-labelledby="testing">
         <h2 id="testing">Testing</h2>
         <ul>
           <li><code>mvn verify</code> runs the unit tests on any JDK from 8 up; CI runs them on JDK 8 and 21, on Linux and Windows.</li>
           <li><code>TokenClientTest</code> sends real HTTPS requests to an in-process stub server that uses the test CA in <code>src/test/resources/tls</code>, including a server that requires a client certificate.</li>
           <li><code>OAuthServiceClientTest</code> makes service calls to the stub server: each method, headers, the token shared by instances, your own token, every status, binary bodies, the size limit, a client certificate; <code>ServiceRequestTest</code> checks every rule of a request.</li>
+          <li><code>TransportSecurityTest</code> checks the transport's defences: a stalled TLS handshake ends at the deadline, a trust-all default installed JVM-wide isn't used, TLS sockets check host names, and a service's login challenge never reaches the JVM's Authenticator.</li>
           <li><code>KeycloakTokenTest</code> sends real token requests to a throwaway Keycloak 26.8.1: secret in a header and in the body, <code>private_key_jwt</code> with RSA and EC keys, mutual TLS with a certificate-bound token, the JWT bearer grant and the refresh token grant. The README section "Live check against Keycloak" has the commands.</li>
           <li>Key tests are checked by mutation: each check breaks one rule in the code (for example, swap Basic and body, drop <code>x5t</code>, leave scopes out of the cache key) and confirms a test fails.</li>
         </ul>

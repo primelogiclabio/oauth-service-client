@@ -1,8 +1,8 @@
 # oauth-service-client: how the library works
 
-A Java 8+ library for backend services that call OAuth-protected APIs. You describe each service and tenant once in a `ClientInfo`; the library gets the access token, keeps it until shortly before it expires, attaches it and makes the request.
+A Java library for backend services that call OAuth-protected APIs. You describe each service and tenant once in a `ClientInfo`; the library gets the access token, keeps it until shortly before it expires, attaches it and makes the request.
 
-3 grants · 5 client authentication methods · 1 runtime dependency (Caffeine 2.9.3) · built and tested on Java 8 and 21
+3 grants · 5 client authentication methods · 1 runtime dependency (Caffeine) · two flavors: `1.0.0` for Java 21, `1.0.0-jdk8` for Java 8 to 20
 
 The same content, with diagrams, is in [library-overview.html](library-overview.html).
 
@@ -25,7 +25,7 @@ The core is generic: it implements the standards (RFC 6749, 7523, 8705) and hand
 |---|---|---|
 | `ClientInfo`, `ClientKey`, `Grant` | Done | Public. Builder that reports every problem at once; secrets never printed. |
 | Token requests | Done | All three grants and five client authentication methods; tested against a stub server and a live Keycloak. |
-| Token cache | Done | Per (service, tenant, user, scope set), on Caffeine 2.9.3. |
+| Token cache | Done | Per (service, tenant, user, scope set), on Caffeine (3.x in the Java 21 flavor, 2.9.3 in the Java 8 flavor). |
 | Scopes passed by the app | Done | Replace the `ClientInfo` defaults for that token. |
 | `OAuthServiceException` | Done | Public. |
 | `OAuthServiceClient`, `ServiceRequest`, `ServiceResponse` | Done | Public. `get`, `post`, `put`, `patch`, `delete`, `request(ServiceRequest)` and `token()`; each call is sent once. |
@@ -379,7 +379,7 @@ ClientInfo.global("bank")
 
 ## Testing
 
-- `mvn verify` runs the unit tests on any JDK from 8 up; CI runs them on JDK 8 and 21, on Linux and Windows.
+- `mvn verify` tests the Java 21 flavor, `mvn verify -Pjdk8` the Java 8 flavor. CI tests the Java 8 flavor on JDK 8 and 21 and the Java 21 flavor on JDK 21, on Linux and Windows. The release workflow runs the Java 8 flavor's tests on Java 8 against the classes it uploads.
 - `TokenClientTest` sends real HTTPS requests to an in-process stub server that uses the test CA in `src/test/resources/tls`, including a server that requires a client certificate.
 - `OAuthServiceClientTest` makes service calls to the stub server: each method, headers, the token shared by instances, your own token, every status, binary bodies, the size limit, a client certificate; `ServiceRequestTest` checks every rule of a request.
 - `TransportSecurityTest` checks the transport's defences: a stalled TLS handshake ends at the deadline, a trust-all default installed JVM-wide isn't used, TLS sockets check host names, and a service's login challenge never reaches the JVM's Authenticator.
@@ -388,7 +388,7 @@ ClientInfo.global("bank")
 
 ## Planned and out of scope
 
-- **Next:** signing (one GPG key for commits, the tag and the release files), then 1.0.0 on Maven Central. [CHANGELOG.md](../CHANGELOG.md) lists what 1.0.0 holds and its known limitations.
+- **1.0.0:** on Maven Central as `1.0.0` (Java 21) and `1.0.0-jdk8` (Java 8 to 20). [CHANGELOG.md](../CHANGELOG.md) lists what it holds and its known limitations.
 - **After the basics:** refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body), a short cool-down after failed token requests, introspection, metadata discovery, and vendor clients on top of the core.
 - **Unverified:** whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.
 - **Out of scope:** sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.
@@ -411,7 +411,7 @@ ClientInfo.global("bank")
 
 ### Libraries and tools
 
-- [Caffeine](https://github.com/ben-manes/caffeine) 2.9.3 (the last line that runs on Java 8)
+- [Caffeine](https://github.com/ben-manes/caffeine): 3.x in the Java 21 flavor; 2.9.3, the last line that runs on Java 8, in the Java 8 flavor
 - [Keycloak: JWT Authorization Grant](https://www.keycloak.org/securing-apps/jwt-authorization-grant), used by the live check
 
-*Describes the code as of November 2026: token requests, the public API and outbound requests done.*
+*Describes the code as of 1.0.0 (November 2026).*

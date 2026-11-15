@@ -160,12 +160,12 @@ main [id]{scroll-margin-top:64px}
     <header class="top">
       <div>
         <h1>oauth-service-client: how the library works</h1>
-        <p class="lede">A Java 8+ library for backend services that call OAuth-protected APIs. You describe each service and tenant once in a <code>ClientInfo</code>; the library gets the access token, keeps it until shortly before it expires, attaches it and makes the request.</p>
+        <p class="lede">A Java library for backend services that call OAuth-protected APIs. You describe each service and tenant once in a <code>ClientInfo</code>; the library gets the access token, keeps it until shortly before it expires, attaches it and makes the request.</p>
         <div class="stats">
           <div class="stat"><b>3</b>grants</div>
           <div class="stat"><b>5</b>client authentication methods</div>
-          <div class="stat"><b>1</b>runtime dependency (Caffeine 2.9.3)</div>
-          <div class="stat"><b>Java 8 and 21</b>built and tested</div>
+          <div class="stat"><b>1</b>runtime dependency (Caffeine)</div>
+          <div class="stat"><b>2 flavors</b><code>1.0.0</code> for Java 21, <code>1.0.0-jdk8</code> for Java 8 to 20</div>
         </div>
       </div>
       <button type="button" class="theme-btn" id="theme-btn">Theme: System</button>
@@ -192,7 +192,7 @@ main [id]{scroll-margin-top:64px}
           <tbody>
             <tr><td><code>ClientInfo</code>, <code>ClientKey</code>, <code>Grant</code></td><td><span class="pill ok">Done</span></td><td>Public. Builder that reports every problem at once; secrets never printed.</td></tr>
             <tr><td>Token requests</td><td><span class="pill ok">Done</span></td><td>All three grants and five client authentication methods; tested against a stub server and a live Keycloak.</td></tr>
-            <tr><td>Token cache</td><td><span class="pill ok">Done</span></td><td>Per (service, tenant, user, scope set), on Caffeine 2.9.3.</td></tr>
+            <tr><td>Token cache</td><td><span class="pill ok">Done</span></td><td>Per (service, tenant, user, scope set), on Caffeine (3.x in the Java 21 flavor, 2.9.3 in the Java 8 flavor).</td></tr>
             <tr><td>Scopes passed by the app</td><td><span class="pill ok">Done</span></td><td>Replace the <code>ClientInfo</code> defaults for that token.</td></tr>
             <tr><td><code>OAuthServiceException</code></td><td><span class="pill ok">Done</span></td><td>Public.</td></tr>
             <tr><td><code>OAuthServiceClient</code>, <code>ServiceRequest</code>, <code>ServiceResponse</code></td><td><span class="pill ok">Done</span></td><td>Public. <code>get</code>, <code>post</code>, <code>put</code>, <code>patch</code>, <code>delete</code>, <code>request(ServiceRequest)</code> and <code>token()</code>; each call is sent once.</td></tr>
@@ -630,7 +630,7 @@ ClientInfo.global("bank")
       <section aria-labelledby="testing">
         <h2 id="testing">Testing</h2>
         <ul>
-          <li><code>mvn verify</code> runs the unit tests on any JDK from 8 up; CI runs them on JDK 8 and 21, on Linux and Windows.</li>
+          <li><code>mvn verify</code> tests the Java 21 flavor, <code>mvn verify -Pjdk8</code> the Java 8 flavor. CI tests the Java 8 flavor on JDK 8 and 21 and the Java 21 flavor on JDK 21, on Linux and Windows. The release workflow runs the Java 8 flavor's tests on Java 8 against the classes it uploads.</li>
           <li><code>TokenClientTest</code> sends real HTTPS requests to an in-process stub server that uses the test CA in <code>src/test/resources/tls</code>, including a server that requires a client certificate.</li>
           <li><code>OAuthServiceClientTest</code> makes service calls to the stub server: each method, headers, the token shared by instances, your own token, every status, binary bodies, the size limit, a client certificate; <code>ServiceRequestTest</code> checks every rule of a request.</li>
           <li><code>TransportSecurityTest</code> checks the transport's defences: a stalled TLS handshake ends at the deadline, a trust-all default installed JVM-wide isn't used, TLS sockets check host names, and a service's login challenge never reaches the JVM's Authenticator.</li>
@@ -642,7 +642,7 @@ ClientInfo.global("bank")
       <section aria-labelledby="limits">
         <h2 id="limits">Planned and out of scope</h2>
         <ul>
-          <li><strong>Next:</strong> signing (one GPG key for commits, the tag and the release files), then 1.0.0 on Maven Central. <a href="../CHANGELOG.md">CHANGELOG.md</a> lists what 1.0.0 holds and its known limitations.</li>
+          <li><strong>1.0.0:</strong> on Maven Central as <code>1.0.0</code> (Java 21) and <code>1.0.0-jdk8</code> (Java 8 to 20). <a href="../CHANGELOG.md">CHANGELOG.md</a> lists what it holds and its known limitations.</li>
           <li><strong>After the basics:</strong> refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body), a short cool-down after failed token requests, introspection, metadata discovery, and vendor clients on top of the core.</li>
           <li><strong>Unverified:</strong> whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.</li>
           <li><strong>Out of scope:</strong> sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.</li>
@@ -667,12 +667,12 @@ ClientInfo.global("bank")
         </ul>
         <h3>Libraries and tools</h3>
         <ul>
-          <li><a href="https://github.com/ben-manes/caffeine">Caffeine</a> 2.9.3 (the last line that runs on Java 8)</li>
+          <li><a href="https://github.com/ben-manes/caffeine">Caffeine</a>: 3.x in the Java 21 flavor; 2.9.3, the last line that runs on Java 8, in the Java 8 flavor</li>
           <li><a href="https://www.keycloak.org/securing-apps/jwt-authorization-grant">Keycloak: JWT Authorization Grant</a>, used by the live check</li>
         </ul>
       </section>
     </main>
-    <footer>Describes the code as of November 2026: token requests, the public API and outbound requests done.</footer>
+    <footer>Describes the code as of 1.0.0 (November 2026).</footer>
   </div>
 </div>
 <script data-doc>

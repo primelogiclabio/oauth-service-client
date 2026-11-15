@@ -6,7 +6,11 @@
 
     <groupId>io.primelogiclab</groupId>
     <artifactId>oauth-service-client</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <!--
+        Two flavors from one source tree, Guava-style: X.Y.Z for Java 21 (the default build) and X.Y.Z-jdk8 for
+        Java 8 to 20 (-Pjdk8). Releases set the version from the tag: -Drevision=X.Y.Z[-jdk8] -Dchangelist=
+    -->
+    <version>${revision}${changelist}</version>
     <packaging>jar</packaging>
 
     <name>oauth-service-client</name>
@@ -43,13 +47,18 @@
     </issueManagement>
 
     <properties>
+        <revision>1.0.0</revision>
+        <changelist>-SNAPSHOT</changelist>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <!-- The Java 21 flavor; the jdk8 profile switches both to the Java 8 flavor -->
+        <java.release>21</java.release>
+        <caffeine.version>3.3.1</caffeine.version>
+        <release.versionPattern>\d+\.\d+\.\d+</release.versionPattern>
+        <!-- Only JDK 8's javac reads these; on JDK 9+ the compiler-release profile sets release instead -->
         <maven.compiler.source>1.8</maven.compiler.source>
         <maven.compiler.target>1.8</maven.compiler.target>
         <junit.version>5.10.2</junit.version>
-        <!-- 2.9.x is the last line that runs on Java 8 (3.x needs Java 11) -->
-        <caffeine.version>2.9.3</caffeine.version>
     </properties>
 
     <dependencies>
@@ -96,6 +105,35 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
+            </plugin>
+            <!--
+                The published POM gets the real version, this flavor's Caffeine version and no profiles, so each
+                flavor's consumers see only what applies to them.
+            -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>flatten-maven-plugin</artifactId>
+                <version>1.9.0</version>
+                <configuration>
+                    <updatePomFile>true</updatePomFile>
+                    <flattenMode>oss</flattenMode>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>flatten</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>flatten</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>flatten-clean</id>
+                        <phase>clean</phase>
+                        <goals>
+                            <goal>clean</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -154,20 +192,39 @@
     </build>
 
     <profiles>
-        <!-- On JDK 9+ use -release 8 so the API surface is checked against Java 8, not just the bytecode level. -->
+        <!--
+            On JDK 9+ compile with release, so the API surface is checked against the flavor's Java version, not
+            just the bytecode level.
+        -->
         <profile>
-            <id>release-8</id>
+            <id>compiler-release</id>
             <activation>
                 <jdk>[9,)</jdk>
             </activation>
             <properties>
-                <maven.compiler.release>8</maven.compiler.release>
+                <maven.compiler.release>${java.release}</maven.compiler.release>
+            </properties>
+        </profile>
+        <!--
+            The Java 8 flavor (X.Y.Z-jdk8): built for Java 8, on Caffeine 2.9.x, the last line that runs on Java 8.
+            -Pjdk8 on a newer JDK; on JDK 8 itself it is the only flavor that builds, so it turns on there.
+        -->
+        <profile>
+            <id>jdk8</id>
+            <activation>
+                <jdk>1.8</jdk>
+            </activation>
+            <properties>
+                <java.release>8</java.release>
+                <caffeine.version>2.9.3</caffeine.version>
+                <release.versionPattern>\d+\.\d+\.\d+-jdk8</release.versionPattern>
             </properties>
         </profile>
         <!--
             On JDK 11+ also compile src/main/java11 (the PATCH transport on java.net.http) with release 11,
-            into the same classes. The class is only loaded by name on a Java 11+ runtime, so the jar still runs
-            on Java 8; built on JDK 8, PATCH reports that it needs Java 11. Releases are built on JDK 11+.
+            into the same classes, in both flavors. The class is only loaded by name on a Java 11+ runtime, so the
+            Java 8 flavor still runs on Java 8; built on JDK 8, PATCH reports that it needs Java 11. Releases are
+            built on JDK 21.
         -->
         <profile>
             <id>java11-patch</id>
@@ -217,6 +274,70 @@
                                 </configuration>
                             </execution>
                         </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <!--
+            Signing and the upload to the Central Portal, for the release workflow only (-Prelease), so local
+            builds never need the key. Uploads wait in the Portal until published there (autoPublish false).
+        -->
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <!-- A version that doesn't match its flavor would stay on Central for good -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-enforcer-plugin</artifactId>
+                        <version>3.7.0</version>
+                        <executions>
+                            <execution>
+                                <id>release-checks</id>
+                                <goals>
+                                    <goal>enforce</goal>
+                                </goals>
+                                <configuration>
+                                    <rules>
+                                        <requireProperty>
+                                            <property>project.version</property>
+                                            <regex>${release.versionPattern}</regex>
+                                            <regexMessage>Version ${project.version} doesn't match this flavor (${release.versionPattern}): X.Y.Z for Java 21, X.Y.Z-jdk8 with -Pjdk8</regexMessage>
+                                        </requireProperty>
+                                        <requireJavaVersion>
+                                            <version>[21,)</version>
+                                            <message>Releases are built on JDK 21, so both flavors include the PATCH class</message>
+                                        </requireJavaVersion>
+                                    </rules>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>3.2.8</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>0.12.0</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                            <deploymentName>${project.artifactId} ${project.version}</deploymentName>
+                            <autoPublish>false</autoPublish>
+                            <waitUntil>validated</waitUntil>
+                        </configuration>
                     </plugin>
                 </plugins>
             </build>

@@ -2,9 +2,9 @@
 
 All notable changes to this library. Versions follow [Semantic Versioning](https://semver.org/): from 1.0.0 on, a change that breaks callers only comes with a new major version.
 
-## 1.0.0 (unreleased)
+## 1.0.0 (2026-11-15)
 
-The first release.
+The first release, in two flavors with the same API: `1.0.0` for Java 21 and later (on Caffeine 3), and `1.0.0-jdk8` for Java 8 to 20 (on Caffeine 2.9).
 
 ### Added
 
@@ -20,7 +20,7 @@ The first release.
   - mutual TLS (RFC 8705)
   - none
 - **Keys:** `ClientKey` reads them from PEM (PKCS#8, PKCS#1, SEC1) or a keystore.
-- **Token cache:** JVM-wide, per service, tenant, user and scopes, on Caffeine 2.9. A token is renewed 5 minutes before it expires, with one renewal per key at a time, and outlives `close()`.
+- **Token cache:** JVM-wide, per service, tenant, user and scopes, on Caffeine. A token is renewed 5 minutes before it expires, with one renewal per key at a time, and outlives `close()`.
 - **Renewal after a 401:** when a service answers 401 to a token at least 60 seconds old, the token is renewed and the call sent once more, within the same deadline.
 - **Retries:**
   - By default a call is resent only when nothing was sent, or after a 429 or 503 with `Retry-After` of at most 30 seconds.
@@ -39,7 +39,7 @@ The first release.
 ### Known limitations
 
 - **PATCH:**
-  - Needs Java 11 or later; on Java 8 it fails with a clear error.
+  - In `1.0.0-jdk8`, it needs Java 11 or later; on Java 8 it fails with a clear error.
   - It can't go through a proxy that asks for a login, and it is refused when a SOCKS proxy or `jdk.httpclient.enableAllMethodRetry=true` is set.
 - **No connection reuse:** every call opens a new TCP and TLS connection. TLS sessions do resume.
 - **Tokens with no expiry:** when a token says nothing about its expiry (no JWT `exp`, no `expires_in`, as with Salesforce), it is kept until the service answers 401. Token introspection (RFC 7662) is planned.

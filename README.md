@@ -2,27 +2,32 @@
 
 Java library for backend services that call OAuth-protected external APIs (DocuSign, Salesforce, Jira, ...): it gets and caches access tokens per service and tenant and makes the request.
 
-> **Status: 1.0.0 in preparation, not released yet.** Everything below works and is tested; signing and publishing to Maven Central are what's left. [CHANGELOG.md](CHANGELOG.md) lists what 1.0.0 holds and its known limitations, and [PROGRESS.md](PROGRESS.md) the plan and design decisions.
-
 ## Install
 
-Once 1.0.0 is on Maven Central, add it with Maven:
+The library comes in two flavors on Maven Central, with the same API. Pick the one for the Java version your app runs on:
+
+| Your app runs on | Version | Built for | Brings along |
+|---|---|---|---|
+| Java 21 or later | `1.0.0` | Java 21 | Caffeine 3 |
+| Java 8 to 20 | `1.0.0-jdk8` | Java 8 | Caffeine 2.9 |
+
+Maven:
 
 ```xml
 <dependency>
     <groupId>io.primelogiclab</groupId>
     <artifactId>oauth-service-client</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.0</version> <!-- 1.0.0-jdk8 on Java 8 to 20 -->
 </dependency>
 ```
 
-or Gradle:
+Gradle:
 
 ```groovy
-implementation 'io.primelogiclab:oauth-service-client:1.0.0'
+implementation 'io.primelogiclab:oauth-service-client:1.0.0' // 1.0.0-jdk8 on Java 8 to 20
 ```
 
-It needs one dependency, Caffeine 2.9, which Maven and Gradle bring along.
+When you update, keep the `-jdk8` suffix if you have it: a version without it needs Java 21.
 
 ## Use
 
@@ -115,15 +120,17 @@ Every answer comes back as a `ServiceResponse`, whatever its status: check `getS
 
 ## Requirements
 
-Java 8 or later (built and tested on Java 8 and 21). PATCH needs Java 11 or later: it is sent with Java's `java.net.http` client, since `HttpURLConnection` can't send it; on Java 8 it fails with a clear error. Build releases on JDK 11 or later so the jar includes the PATCH support.
+- `1.0.0` needs Java 21 or later.
+- `1.0.0-jdk8` runs on Java 8 or later. Its PATCH needs Java 11 or later: it is sent with Java's `java.net.http` client, since `HttpURLConnection` can't send it; on Java 8 it fails with a clear error.
 
 ## Build
 
 ```bash
-mvn verify
+mvn verify          # the Java 21 flavor, on JDK 21
+mvn verify -Pjdk8   # the Java 8 flavor, on JDK 11 or later
 ```
 
-Any JDK from 8 up builds it; on JDK 9 and later the code is compiled with `--release 8`, so it can't use newer Java APIs by accident. CI builds and tests on JDK 8 and 21, on Linux and Windows.
+Both flavors build from the same source, which stays within Java 8. On JDK 9 and later each is compiled with `--release` for its Java version, so it can't use newer Java APIs by accident. JDK 8 itself builds only the Java 8 flavor, picked automatically, and without PATCH. Releases are built on JDK 21 by the release workflow when a `vX.Y.Z` tag is pushed. CI builds and tests the Java 8 flavor on JDK 8 and 21 and the Java 21 flavor on JDK 21, on Linux and Windows.
 
 ## Live check against Keycloak
 

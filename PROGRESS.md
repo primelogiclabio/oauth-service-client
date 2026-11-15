@@ -3,10 +3,9 @@
 Goal: Java library that makes outbound calls to OAuth-protected external services (e.g. DocuSign, Salesforce, Jira, Vertex payroll, Entra ID apps, Okta apps, Auth0, Oracle Integration (OIC)) for backend code: the caller passes client info (per service and tenant, or global) and the endpoint and payload; the library gets the token, cached per (service, tenant, user, scopes) until shortly before it expires, and makes the request. Basic first (token requests, public API, outbound requests, tests, README), then features on top.
 
 ## Current focus
-- (none)
+- Release 1.0.0: one jar for Java 8 and 21, built on JDK 21 (so the PATCH class is included), signed in a release profile, a release candidate you verify first, then the repo goes public and 1.0.0 goes to Maven Central (io.primelogiclab namespace verified through primelogiclab.io DNS), tag v1.0.0
 
 ## Next
-- [ ] Release 1.0.0 once signing is done: one jar for Java 8 and 21, built on JDK 21 (so the PATCH class is included), signed in a release profile, a release candidate you verify first, then the repo goes public and 1.0.0 goes to Maven Central (io.primelogiclab namespace verified through primelogiclab.io DNS), tag v1.0.0
 - [ ] Refresh token rotation for 3LO apps (Jira): hand each rotated refresh token back to the caller to store; JSON token request body (Atlassian documents only JSON there)
 - [ ] Short cool-down after a failed token request, so repeated failures don't use up a vendor's request cap (Vertex: 10 per 8 hours)
 - [ ] Introspection (RFC 7662, ClientInfo.introspectionUrl) for a token with no JWT exp and no expires_in (Salesforce), then AccessToken.withExpiryFrom; Salesforce's introspect endpoint takes client_id and client_secret (Basic or body), so with JWT bearer the secret authenticates the token request too: check Salesforce accepts that

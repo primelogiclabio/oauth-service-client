@@ -2,6 +2,7 @@ package io.primelogiclab.oauthclient;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -118,6 +119,24 @@ class KeycloakTokenTest {
         assertNotNull(token.getField("refresh_token"), "the new refresh token reaches the caller");
     }
 
+    @Test
+    void aTokenTheServiceTurnsAwayIsRenewedOnceAndTheCallSentAgain() {
+        ClientInfo info = secretClient("service-client", "service-dev-secret").scope("openid").build();
+        OAuthServiceClient service = new OAuthServiceClient(new TokenCache(), client, executor(),
+                OAuthServiceClient.MAX_RESPONSE_BYTES);
+        service.initialize(info);
+        String userinfo = base + "/realms/" + REALM + "/protocol/openid-connect/userinfo";
+        ServiceResponse before = service.get(userinfo);
+        assertEquals(200, before.getStatus(), before.getBody());
+        AccessToken first = service.token();
+
+        revoke(first.getValue()); // Keycloak now answers 401 to it
+        ServiceResponse after = service.get(userinfo);
+
+        assertEquals(200, after.getStatus(), after.getBody());
+        assertNotEquals(first.getValue(), service.token().getValue());
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private String tokenUrl() {
@@ -133,6 +152,22 @@ class KeycloakTokenTest {
                 Duration.ofSeconds(60), TestTls.clientTrust());
         return new HttpExecutor(transport, TokenClient.MAX_RETRIES, TokenClient.RETRY_BACKOFF,
                 millis -> sleeps.add(millis), Duration.ofSeconds(60));
+    }
+
+    /** Revokes an access token (RFC 7009) as service-client. */
+    private void revoke(String accessToken) {
+        final Map<String, String> headers = new LinkedHashMap<String, String>();
+        headers.put("Content-Type", "application/x-www-form-urlencoded");
+        headers.put("Authorization", "Basic " + java.util.Base64.getEncoder().encodeToString(
+                "service-client:service-dev-secret".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        final String form = "token=" + TokenClient.formEncode(accessToken) + "&token_type_hint=access_token";
+        HttpResponse response = executor().execute(new Supplier<HttpRequest>() {
+            @Override
+            public HttpRequest get() {
+                return HttpRequest.post(base + "/realms/" + REALM + "/protocol/openid-connect/revoke", headers, form);
+            }
+        }, HttpExecutor.Retry.NEVER);
+        assertEquals(200, response.getStatus(), response.getBody());
     }
 
     /** jane's refresh token from the password grant, which the library itself doesn't offer. */

@@ -29,7 +29,7 @@ The core is generic: it implements the standards (RFC 6749, 7523, 8705) and hand
 | Scopes passed by the app | Done | Replace the `ClientInfo` defaults for that token. |
 | `OAuthServiceException` | Done | Public. |
 | `OAuthServiceClient`, `ServiceRequest`, `ServiceResponse` | Done | Public. `get`, `post`, `put`, `delete`, `request(ServiceRequest)` and `token()`; each call is sent once. |
-| Outbound requests | Next | Renew the token once after a 401, `Retry-After`, retries the caller asks for, settable timeouts. |
+| Outbound requests | Done | Renew once after a 401, retries (`Retry-After` in seconds or as a date), `retryOnFailure()`, `builder()` settings and a per-call timeout; the mutual TLS socket factory kept per key. |
 | PATCH | Planned | `HttpURLConnection` can't send it; Salesforce updates use it. |
 | Introspection (RFC 7662) | Planned | For tokens that carry no expiry (Salesforce). `introspectionUrl` can already be set but isn't used yet. |
 | Metadata discovery (RFC 8414) | Planned | An issuer instead of an explicit token URL. |
@@ -84,12 +84,24 @@ try (OAuthServiceClient service = new OAuthServiceClient()) {
 }
 ```
 
+```java
+OAuthServiceClient service = OAuthServiceClient.builder()
+        .connectTimeout(Duration.ofSeconds(10))   // defaults shown
+        .readTimeout(Duration.ofSeconds(30))
+        .callTimeout(Duration.ofSeconds(60))      // attempts, pauses, the resend after a 401
+        .retries(2)
+        .maxResponseBytes(16 * 1024 * 1024)
+        .build();
+```
+
 - **Methods:** GET, HEAD, POST, PUT, DELETE and OPTIONS. PATCH isn't supported yet (`HttpURLConnection` can't send it). GET, HEAD, DELETE and OPTIONS take no body.
 - **Body:** a String goes as UTF-8 with `Content-Type: application/json; charset=UTF-8` unless you set a content type; bytes go as `application/octet-stream`.
 - **Headers:** any valid header except `Authorization` (pass your own token instead) and the ones the JDK sets itself (`Host`, `Content-Length`, `Connection`, ...).
 - **The token:** the library's, from the cache, for the request's scopes or else the `ClientInfo` defaults; or your own, sent as `Bearer` as is, never cached or renewed. A request can't carry both scopes and your own token.
 - **The answer:** every status comes back as a `ServiceResponse`: `getStatus()`, `getHeader(name)`, `getBody()` (text by the Content-Type charset) and `getBodyBytes()` (a PDF arrives intact). Up to 16 MB.
-- **Sent once:** a call isn't retried yet. A POST is sent in a mode that stops Java from sending it twice; Java may resend a GET, PUT or DELETE once if the connection fails before the answer. Redirects aren't followed, so the token never goes to another host.
+- **Retries:** a call is resent when nothing was sent, or after a 429 or 503 with `Retry-After`; `retryOnFailure()` adds 5xx and other failures for idempotent calls. A POST is sent in a mode that stops Java itself from sending it twice; Java may resend a GET, PUT or DELETE once if the connection fails before the answer. Redirects aren't followed, so the token never goes to another host.
+- **401:** with the library's token, the token is renewed once (one token request, shared by every thread holding it) and the call sent once more; with your own token the 401 comes back.
+- **Settings:** `OAuthServiceClient.builder()` sets the timeouts, the retries and the response size limit; `ServiceRequest.timeout(...)` sets one call's limit, for a large download. The timeouts also apply to the instance's token requests.
 - **Checked first:** the URL must be https before any token is fetched; a bad URL or token gives an `IllegalArgumentException` that doesn't repeat the value.
 - **Client certificate:** presented on service calls too whenever the `ClientInfo` has one, for certificate-bound tokens.
 - **Lifetime:** `initialize` can be called again, for example after a secret rotation. Tokens are cached for the whole JVM (per class loader), so they outlive `close()` and instances with the same `ClientInfo` share them. One instance is thread-safe; after `close()` calls throw `IllegalStateException`.
@@ -242,16 +254,28 @@ Token requests are resent only when the server certainly didn't process them, be
 | TLS handshake failed | Not resent: it would fail the same way |
 | An OAuth error (400, 401) | Not resent: reported with its `error` (a 401 as `invalid_client`) |
 
+A service call follows the same idea: by default it is resent only when the service certainly didn't carry it out. `ServiceRequest.retryOnFailure()` adds 5xx, a busy answer without `Retry-After` and failures after sending, for idempotent calls (a POST may then be carried out twice). A pause that doesn't fit in what is left of the call's timeout ends the retries, and the answer comes back.
+
+| What happened | Service call | With `retryOnFailure()` |
+|---|---|---|
+| Connection refused, host not found, connect timeout | Resent, after 500 ms, then 1 s | Resent |
+| 429 or 503 with `Retry-After` (seconds or a date) | Resent after that pause (at most 30 s) | Resent after that pause |
+| 429 or 503 without `Retry-After` | Returned | Resent, after 500 ms, then 1 s |
+| 500, 502, 504 | Returned | Resent |
+| Read timeout, connection lost after sending | Reported | Resent |
+| 401 with the library's token | Token renewed once, call sent once more | The same |
+| 401 with your own token | Returned | Returned |
+
 | Limit | Value |
 |---|---|
-| Connect timeout / read timeout | 10 s / 30 s |
-| Whole call, all attempts and pauses | 60 s |
-| Retries | 2 (3 attempts) |
+| Connect timeout / read timeout | 10 s / 30 s (`connectTimeout`, `readTimeout`) |
+| Whole call: attempts, pauses, the resend after a 401 | 60 s (`callTimeout`, or `ServiceRequest.timeout`) |
+| Retries | Token requests 2; service calls 2 by default (`retries`, 0 to 10) |
 | Token response size | 1 MB read, 256 KB used |
-| Service response size | 16 MB |
+| Service response size | 16 MB (`maxResponseBytes`) |
 | Requests in flight per host / worker threads | 32 / 64, per JVM |
 
-Every token request, and every POST to a service, is also sent in a mode that stops Java from silently resending it. Redirects are never followed. Service calls aren't retried yet. These limits are fixed for now; the outbound requests item makes them settings.
+Every token request, and every POST to a service, is also sent in a mode that stops Java from silently resending it. Redirects are never followed. The settings come from `OAuthServiceClient.builder()`, and the timeouts also apply to the instance's token requests. A client certificate's TLS context is made once per `ClientKey` and reused, so its TLS sessions are too.
 
 ## Errors
 
@@ -362,7 +386,7 @@ ClientInfo.global("bank")
 
 ## Planned and out of scope
 
-- **Next:** outbound requests (renew once after a 401, `Retry-After`, settings), tests for them against Keycloak, the README examples, PATCH support, then the base release (0.1.0).
+- **Next:** more live tests of service calls against Keycloak, the README examples, PATCH support, then the base release (0.1.0).
 - **After the basics:** refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body), a short cool-down after failed token requests, introspection, metadata discovery, and vendor clients on top of the core.
 - **Unverified:** whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.
 - **Out of scope:** sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.
@@ -388,4 +412,4 @@ ClientInfo.global("bank")
 - [Caffeine](https://github.com/ben-manes/caffeine) 2.9.3 (the last line that runs on Java 8)
 - [Keycloak: JWT Authorization Grant](https://www.keycloak.org/securing-apps/jwt-authorization-grant), used by the live check
 
-*Describes the code as of November 2026: token requests and the public API done, outbound requests next.*
+*Describes the code as of November 2026: token requests, the public API and outbound requests done.*

@@ -6,7 +6,11 @@ import java.net.ConnectException;
 import java.net.NoRouteToHostException;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
@@ -18,8 +22,8 @@ import javax.net.ssl.SSLHandshakeException;
 
 /**
  * Runs requests through the transport with retries and exponential backoff; a failed TLS handshake is never
- * retried, since it fails the same way again. Honors {@code Retry-After}
- * (seconds form), capped at {@link #MAX_RETRY_AFTER_MS}. With a call timeout, all attempts and the pauses
+ * retried, since it fails the same way again. Honors {@code Retry-After} (seconds or HTTP-date), capped at
+ * {@link #MAX_RETRY_AFTER_MS}. With a call timeout, all attempts and the pauses
  * between them end within it: later attempts get only the time that is left (see {@link HttpRequest#withTimeout}).
  * Every URL is checked to be https before anything is sent. Copied from oauth-connector.
  */
@@ -35,6 +39,11 @@ final class HttpExecutor {
          * (Vertex: 10 per 8 hours), and a resent rotating refresh token can revoke the whole token family.
          */
         IF_NOT_PROCESSED,
+        /**
+         * Only when nothing was sent (the connection could not be made), or the server answered 429 or 503
+         * with Retry-After, asking to come back. Service calls use this unless the caller asks for more.
+         */
+        BUSY_OR_NOT_SENT,
         /** On any transport error, 429 or 5xx (idempotent requests). */
         ALWAYS
     }
@@ -60,14 +69,26 @@ final class HttpExecutor {
     private final long backoffMs;
     private final Sleeper sleeper;
     private final long callTimeoutNanos; // 0 = none
+    private final Clock clock; // for Retry-After dates
 
     /** @param callTimeout longest one call may take with all its attempts; {@code null} for no overall limit */
     HttpExecutor(HttpTransport transport, int maxRetries, Duration backoff, Sleeper sleeper, Duration callTimeout) {
+        this(transport, maxRetries, backoff, sleeper, callTimeout, Clock.systemUTC());
+    }
+
+    HttpExecutor(HttpTransport transport, int maxRetries, Duration backoff, Sleeper sleeper, Duration callTimeout,
+                 Clock clock) {
         this.transport = transport;
         this.maxRetries = maxRetries;
         this.backoffMs = backoff.toMillis();
         this.sleeper = sleeper;
         this.callTimeoutNanos = callTimeout == null ? 0 : Math.max(1, callTimeout.toNanos());
+        this.clock = clock;
+    }
+
+    /** The deadline for a call starting now, in {@link System#nanoTime()} terms; 0 when there's no call timeout. */
+    long deadlineFromNow() {
+        return callTimeoutNanos == 0 ? 0 : System.nanoTime() + callTimeoutNanos;
     }
 
     /**
@@ -78,9 +99,17 @@ final class HttpExecutor {
      * @throws OAuthServiceException if the URL isn't https (nothing is sent), or the transport fails on the last attempt
      */
     HttpResponse execute(Supplier<HttpRequest> requests, Retry retry) {
+        return execute(requests, retry, deadlineFromNow());
+    }
+
+    /**
+     * Like {@link #execute(Supplier, Retry)}, with every attempt and pause ending by {@code deadline}, a
+     * {@link System#nanoTime()} value; 0 for none. Lets one call share its deadline across several executions
+     * (a resend after the service rejected the token).
+     */
+    HttpResponse execute(Supplier<HttpRequest> requests, Retry retry, long deadline) {
         int attempts = retry == Retry.NEVER ? 1 : maxRetries + 1;
         long delay = Math.min(backoffMs, MAX_RETRY_AFTER_MS);
-        long deadline = callTimeoutNanos == 0 ? 0 : System.nanoTime() + callTimeoutNanos;
         for (int attempt = 1; ; attempt++) {
             HttpRequest request = requests.get();
             String problem = ClientInfo.urlProblem(request.getUrl());
@@ -95,7 +124,7 @@ final class HttpExecutor {
                 throw new OAuthServiceException("Interrupted before sending " + request,
                         new InterruptedIOException("the calling thread is interrupted"));
             }
-            if (deadline != 0 && attempt > 1) {
+            if (deadline != 0) { // every attempt gets only what is left of the call
                 request = request.withTimeout(Duration.ofNanos(Math.max(1, deadline - System.nanoTime())));
             }
             HttpResponse response;
@@ -106,7 +135,7 @@ final class HttpExecutor {
                 // not sent (a connect timeout) and time is left, so the call timeout bounds the whole call.
                 boolean timedOut = timedOut(e);
                 boolean retryable = attempt < attempts && !interrupted(e) && !tlsHandshakeFailed(e)
-                        && (retry != Retry.IF_NOT_PROCESSED || notSent(e))
+                        && (retry == Retry.ALWAYS || notSent(e))
                         && (!timedOut || (notSent(e) && deadline != 0))
                         && timeLeft(deadline, delay);
                 if (!retryable) {
@@ -120,9 +149,19 @@ final class HttpExecutor {
             int status = response.getStatus();
             // A proxy can answer 503 after the server processed the request; only a 503 with
             // Retry-After (the server itself asking to come back) counts as "not processed".
-            boolean retryStatus = retry == Retry.IF_NOT_PROCESSED
-                    ? status == 429 || (status == 503 && response.header("Retry-After") != null)
-                    : status == 429 || status >= 500;
+            boolean askedToWait = response.header("Retry-After") != null;
+            boolean retryStatus;
+            switch (retry) {
+                case IF_NOT_PROCESSED:
+                    retryStatus = status == 429 || (status == 503 && askedToWait);
+                    break;
+                case BUSY_OR_NOT_SENT:
+                    retryStatus = (status == 429 || status == 503) && askedToWait;
+                    break;
+                default:
+                    retryStatus = status == 429 || status >= 500;
+                    break;
+            }
             long wait = retryAfter(response.header("Retry-After"), delay);
             if (!retryStatus || attempt >= attempts || !timeLeft(deadline, wait)) {
                 return response;
@@ -184,17 +223,26 @@ final class HttpExecutor {
         return Math.min(delay * 2, MAX_RETRY_AFTER_MS);
     }
 
-    private static long retryAfter(String header, long fallback) {
-        if (header != null) {
-            try {
-                long seconds = Long.parseLong(header.trim());
-                // capped before multiplying, so a huge value can't overflow into "retry at once"
-                return Math.min(Math.max(0, seconds), MAX_RETRY_AFTER_MS / 1000L) * 1000L;
-            } catch (NumberFormatException ignored) {
-                // HTTP-date form: use backoff
-            }
+    /** The pause Retry-After asks for (seconds, or an HTTP-date), at most {@link #MAX_RETRY_AFTER_MS}; else {@code fallback}. */
+    private long retryAfter(String header, long fallback) {
+        if (header == null) {
+            return fallback;
         }
-        return fallback;
+        String value = header.trim();
+        try {
+            long seconds = Long.parseLong(value);
+            // capped before multiplying, so a huge value can't overflow into "retry at once"
+            return Math.min(Math.max(0, seconds), MAX_RETRY_AFTER_MS / 1000L) * 1000L;
+        } catch (NumberFormatException notSeconds) {
+            // the HTTP-date form, e.g. Wed, 21 Oct 2026 07:28:00 GMT
+        }
+        try {
+            ZonedDateTime at = ZonedDateTime.parse(value, DateTimeFormatter.RFC_1123_DATE_TIME);
+            long ms = at.toInstant().toEpochMilli() - clock.millis();
+            return Math.min(Math.max(0, ms), MAX_RETRY_AFTER_MS);
+        } catch (DateTimeParseException | ArithmeticException unreadable) {
+            return fallback;
+        }
     }
 
     /** Why the headers can't be sent, or null: names must be RFC 7230 tokens, values free of control characters (tab aside). */

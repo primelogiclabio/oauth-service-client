@@ -41,6 +41,7 @@ final class StubServer implements AutoCloseable {
         final String contentType;
         final byte[] body;
         final Map<String, String> headers = new LinkedHashMap<String, String>();
+        long delayMillis;
 
         Response(int status, String contentType, String body) {
             this(status, contentType, body.getBytes(StandardCharsets.UTF_8));
@@ -54,6 +55,12 @@ final class StubServer implements AutoCloseable {
 
         Response header(String name, String value) {
             headers.put(name, value);
+            return this;
+        }
+
+        /** Waits this long before answering, like a slow server. */
+        Response delay(long millis) {
+            delayMillis = millis;
             return this;
         }
     }
@@ -189,6 +196,13 @@ final class StubServer implements AutoCloseable {
             }
             if (r == null) {
                 r = new Response(404, "text/plain", "not found");
+            }
+            if (r.delayMillis > 0) {
+                try {
+                    Thread.sleep(r.delayMillis);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
             }
             byte[] bytes = "HEAD".equals(ex.getRequestMethod()) ? new byte[0] : r.body;
             if (r.contentType != null) {

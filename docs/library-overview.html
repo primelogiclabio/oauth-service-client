@@ -196,7 +196,7 @@ main [id]{scroll-margin-top:64px}
             <tr><td>Scopes passed by the app</td><td><span class="pill ok">Done</span></td><td>Replace the <code>ClientInfo</code> defaults for that token.</td></tr>
             <tr><td><code>OAuthServiceException</code></td><td><span class="pill ok">Done</span></td><td>Public.</td></tr>
             <tr><td><code>OAuthServiceClient</code>, <code>ServiceRequest</code>, <code>ServiceResponse</code></td><td><span class="pill ok">Done</span></td><td>Public. <code>get</code>, <code>post</code>, <code>put</code>, <code>delete</code>, <code>request(ServiceRequest)</code> and <code>token()</code>; each call is sent once.</td></tr>
-            <tr><td>Outbound requests</td><td><span class="pill todo">Next</span></td><td>Renew the token once after a 401, <code>Retry-After</code>, retries the caller asks for, settable timeouts.</td></tr>
+            <tr><td>Outbound requests</td><td><span class="pill ok">Done</span></td><td>Renew once after a 401, retries (<code>Retry-After</code> in seconds or as a date), <code>retryOnFailure()</code>, <code>builder()</code> settings and a per-call timeout; the mutual TLS socket factory kept per key.</td></tr>
             <tr><td>PATCH</td><td><span class="pill todo">Planned</span></td><td><code>HttpURLConnection</code> can't send it; Salesforce updates use it.</td></tr>
             <tr><td>Introspection (RFC 7662)</td><td><span class="pill todo">Planned</span></td><td>For tokens that carry no expiry (Salesforce). <code>introspectionUrl</code> can already be set but isn't used yet.</td></tr>
             <tr><td>Metadata discovery (RFC 8414)</td><td><span class="pill todo">Planned</span></td><td>An issuer instead of an explicit token URL.</td></tr>
@@ -285,13 +285,22 @@ main [id]{scroll-margin-top:64px}
             .scopes("items.write"));
     String instanceUrl = (String) service.token().getField("instance_url");
 }</code></pre>
+        <pre><code>OAuthServiceClient service = OAuthServiceClient.builder()
+        .connectTimeout(Duration.ofSeconds(10))   // defaults shown
+        .readTimeout(Duration.ofSeconds(30))
+        .callTimeout(Duration.ofSeconds(60))      // attempts, pauses, the resend after a 401
+        .retries(2)
+        .maxResponseBytes(16 * 1024 * 1024)
+        .build();</code></pre>
         <ul>
           <li><strong>Methods:</strong> GET, HEAD, POST, PUT, DELETE and OPTIONS. PATCH isn't supported yet (<code>HttpURLConnection</code> can't send it). GET, HEAD, DELETE and OPTIONS take no body.</li>
           <li><strong>Body:</strong> a String goes as UTF-8 with <code>Content-Type: application/json; charset=UTF-8</code> unless you set a content type; bytes go as <code>application/octet-stream</code>.</li>
           <li><strong>Headers:</strong> any valid header except <code>Authorization</code> (pass your own token instead) and the ones the JDK sets itself (<code>Host</code>, <code>Content-Length</code>, <code>Connection</code>, ...).</li>
           <li><strong>The token:</strong> the library's, from the cache, for the request's scopes or else the <code>ClientInfo</code> defaults; or your own, sent as <code>Bearer</code> as is, never cached or renewed. A request can't carry both scopes and your own token.</li>
           <li><strong>The answer:</strong> every status comes back as a <code>ServiceResponse</code>: <code>getStatus()</code>, <code>getHeader(name)</code>, <code>getBody()</code> (text by the Content-Type charset) and <code>getBodyBytes()</code> (a PDF arrives intact). Up to 16 MB.</li>
-          <li><strong>Sent once:</strong> a call isn't retried yet. A POST is sent in a mode that stops Java from sending it twice; Java may resend a GET, PUT or DELETE once if the connection fails before the answer. Redirects aren't followed, so the token never goes to another host.</li>
+          <li><strong>Retries:</strong> a call is resent when nothing was sent, or after a 429 or 503 with <code>Retry-After</code>; <code>retryOnFailure()</code> adds 5xx and other failures for idempotent calls. A POST is sent in a mode that stops Java itself from sending it twice; Java may resend a GET, PUT or DELETE once if the connection fails before the answer. Redirects aren't followed, so the token never goes to another host.</li>
+          <li><strong>401:</strong> with the library's token, the token is renewed once (one token request, shared by every thread holding it) and the call sent once more; with your own token the 401 comes back.</li>
+          <li><strong>Settings:</strong> <code>OAuthServiceClient.builder()</code> sets the timeouts, the retries and the response size limit; <code>ServiceRequest.timeout(...)</code> sets one call's limit, for a large download. The timeouts also apply to the instance's token requests.</li>
           <li><strong>Checked first:</strong> the URL must be https before any token is fetched; a bad URL or token gives an <code>IllegalArgumentException</code> that doesn't repeat the value.</li>
           <li><strong>Client certificate:</strong> presented on service calls too whenever the <code>ClientInfo</code> has one, for certificate-bound tokens.</li>
           <li><strong>Lifetime:</strong> <code>initialize</code> can be called again, for example after a secret rotation. Tokens are cached for the whole JVM (per class loader), so they outlive <code>close()</code> and instances with the same <code>ClientInfo</code> share them. One instance is thread-safe; after <code>close()</code> calls throw <code>IllegalStateException</code>.</li>
@@ -488,18 +497,31 @@ AccessToken token = service.token("https://graph.microsoft.com/.default");   // 
             <tr><td>An OAuth error (400, 401)</td><td>Not resent: reported with its <code>error</code> (a 401 as <code>invalid_client</code>)</td></tr>
           </tbody>
         </table></div>
+        <p>A service call follows the same idea: by default it is resent only when the service certainly didn't carry it out. <code>ServiceRequest.retryOnFailure()</code> adds 5xx, a busy answer without <code>Retry-After</code> and failures after sending, for idempotent calls (a POST may then be carried out twice). A pause that doesn't fit in what is left of the call's timeout ends the retries, and the answer comes back.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>What happened</th><th>Service call</th><th>With <code>retryOnFailure()</code></th></tr></thead>
+          <tbody>
+            <tr><td>Connection refused, host not found, connect timeout</td><td>Resent, after 500 ms, then 1 s</td><td>Resent</td></tr>
+            <tr><td>429 or 503 with <code>Retry-After</code> (seconds or a date)</td><td>Resent after that pause (at most 30 s)</td><td>Resent after that pause</td></tr>
+            <tr><td>429 or 503 without <code>Retry-After</code></td><td>Returned</td><td>Resent, after 500 ms, then 1 s</td></tr>
+            <tr><td>500, 502, 504</td><td>Returned</td><td>Resent</td></tr>
+            <tr><td>Read timeout, connection lost after sending</td><td>Reported</td><td>Resent</td></tr>
+            <tr><td>401 with the library's token</td><td>Token renewed once, call sent once more</td><td>The same</td></tr>
+            <tr><td>401 with your own token</td><td>Returned</td><td>Returned</td></tr>
+          </tbody>
+        </table></div>
         <div class="table-wrap"><table>
           <thead><tr><th>Limit</th><th>Value</th></tr></thead>
           <tbody>
-            <tr><td>Connect timeout / read timeout</td><td>10 s / 30 s</td></tr>
-            <tr><td>Whole call, all attempts and pauses</td><td>60 s</td></tr>
-            <tr><td>Retries</td><td>2 (3 attempts)</td></tr>
+            <tr><td>Connect timeout / read timeout</td><td>10 s / 30 s (<code>connectTimeout</code>, <code>readTimeout</code>)</td></tr>
+            <tr><td>Whole call: attempts, pauses, the resend after a 401</td><td>60 s (<code>callTimeout</code>, or <code>ServiceRequest.timeout</code>)</td></tr>
+            <tr><td>Retries</td><td>Token requests 2; service calls 2 by default (<code>retries</code>, 0 to 10)</td></tr>
             <tr><td>Token response size</td><td>1 MB read, 256 KB used</td></tr>
-            <tr><td>Service response size</td><td>16 MB</td></tr>
+            <tr><td>Service response size</td><td>16 MB (<code>maxResponseBytes</code>)</td></tr>
             <tr><td>Requests in flight per host / worker threads</td><td>32 / 64, per JVM</td></tr>
           </tbody>
         </table></div>
-        <p>Every token request, and every POST to a service, is also sent in a mode that stops Java from silently resending it. Redirects are never followed. Service calls aren't retried yet. These limits are fixed for now; the outbound requests item makes them settings.</p>
+        <p>Every token request, and every POST to a service, is also sent in a mode that stops Java from silently resending it. Redirects are never followed. The settings come from <code>OAuthServiceClient.builder()</code>, and the timeouts also apply to the instance's token requests. A client certificate's TLS context is made once per <code>ClientKey</code> and reused, so its TLS sessions are too.</p>
       </section>
 
       <section aria-labelledby="errors">
@@ -619,7 +641,7 @@ ClientInfo.global("bank")
       <section aria-labelledby="limits">
         <h2 id="limits">Planned and out of scope</h2>
         <ul>
-          <li><strong>Next:</strong> outbound requests (renew once after a 401, <code>Retry-After</code>, settings), tests for them against Keycloak, the README examples, PATCH support, then the base release (0.1.0).</li>
+          <li><strong>Next:</strong> more live tests of service calls against Keycloak, the README examples, PATCH support, then the base release (0.1.0).</li>
           <li><strong>After the basics:</strong> refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body), a short cool-down after failed token requests, introspection, metadata discovery, and vendor clients on top of the core.</li>
           <li><strong>Unverified:</strong> whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.</li>
           <li><strong>Out of scope:</strong> sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.</li>
@@ -649,7 +671,7 @@ ClientInfo.global("bank")
         </ul>
       </section>
     </main>
-    <footer>Describes the code as of November 2026: token requests and the public API done, outbound requests next.</footer>
+    <footer>Describes the code as of November 2026: token requests, the public API and outbound requests done.</footer>
   </div>
 </div>
 <script data-doc>

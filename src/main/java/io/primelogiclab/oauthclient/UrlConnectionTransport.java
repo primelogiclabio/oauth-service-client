@@ -30,6 +30,9 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLParameters;
@@ -58,6 +61,9 @@ final class UrlConnectionTransport implements HttpTransport {
      * example a tenant's, holds at most this many connections and worker threads.
      */
     static final int MAX_PER_HOST = 32;
+
+    /** Most client certificates whose socket factory is kept per transport. */
+    static final long MAX_CERTIFICATE_FACTORIES = 1000;
 
     /** The overall limit per request the library uses by default. */
     static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(60);
@@ -256,6 +262,13 @@ final class UrlConnectionTransport implements HttpTransport {
      * replaced (with one that trusts everything) and which presents {@code javax.net.ssl.keyStore}'s key.
      */
     private final SSLSocketFactory defaultSocketFactory;
+    /**
+     * Socket factories per client certificate, so repeated calls with one key reuse its TLS context and
+     * sessions. Keyed by the key object's identity (weak keys): a different key, another tenant's say,
+     * never shares one, and an entry goes when its key is no longer used.
+     */
+    private final Cache<ClientKey, SSLSocketFactory> certificateFactories =
+            Caffeine.newBuilder().weakKeys().maximumSize(MAX_CERTIFICATE_FACTORIES).build();
 
     /**
      * @param requestTimeout longest one request may take in total, from waiting for a free slot to the
@@ -455,6 +468,11 @@ final class UrlConnectionTransport implements HttpTransport {
         return Workers.EXECUTOR.getActiveCount();
     }
 
+    /** The TLS socket factory presenting {@code certificate}, made once per key and kept. */
+    SSLSocketFactory socketFactoryFor(final ClientKey certificate) {
+        return certificateFactories.get(certificate, key -> Tls.socketFactory(key, trustManagers));
+    }
+
     /** The overall limit per request in milliseconds, 0 for none; for tests. */
     long requestTimeoutMillis() {
         return requestTimeoutMs;
@@ -477,7 +495,7 @@ final class UrlConnectionTransport implements HttpTransport {
             // a new factory per client certificate: the JDK reuses a kept-alive connection only with the
             // same factory, so a connection made with one tenant's certificate never carries another's request
             SSLSocketFactory factory = request.getClientCertificate() != null
-                    ? Tls.socketFactory(request.getClientCertificate(), trustManagers) : defaultSocketFactory;
+                    ? socketFactoryFor(request.getClientCertificate()) : defaultSocketFactory;
             https.setSSLSocketFactory(new CallSocketFactory(factory, call));
             // the JDK's own host name check decides; a lenient JVM-wide default verifier is never asked
             https.setHostnameVerifier(NO_EXCEPTIONS);

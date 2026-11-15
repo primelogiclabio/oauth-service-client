@@ -335,6 +335,211 @@ class OAuthServiceClientTest {
         }
     }
 
+    // ------------------------------------------------------------------ 401: renew once
+
+    @Test
+    void a401RenewsTheTokenOnceAndSendsAgain() throws Exception {
+        StubServer server = server(false);
+        server.enqueue("/items", StubServer.json(401, "{\"error\":\"invalid_token\"}"));
+        server.enqueue("/items", StubServer.json(200, "{\"ok\":true}"));
+        OAuthServiceClient service = client(info());
+
+        ServiceResponse response = service.get(server.url("/items"));
+
+        assertEquals(200, response.getStatus());
+        List<StubServer.Recorded> r = server.requests();
+        assertEquals(2, r.size());
+        assertEquals("Bearer tok-1", r.get(0).header("Authorization"));
+        assertEquals("Bearer tok-2", r.get(1).header("Authorization"));
+        assertEquals(2, fetcher.count.get());
+        // the renewed token is the cached one now
+        service.get(server.url("/other"));
+        assertEquals("Bearer tok-2", server.last().header("Authorization"));
+    }
+
+    @Test
+    void aPostTurnedAwayWith401IsSentAgainWithItsBody() throws Exception {
+        StubServer server = server(false);
+        server.enqueue("/items", StubServer.json(401, "{}").header("WWW-Authenticate", "Bearer error=\"invalid_token\""));
+        server.enqueue("/items", StubServer.json(201, "{}"));
+
+        ServiceResponse response = client(info()).post(server.url("/items"), JSON);
+
+        assertEquals(201, response.getStatus());
+        assertEquals(JSON, server.requests().get(1).body);
+        assertEquals("Bearer tok-2", server.requests().get(1).header("Authorization"));
+    }
+
+    @Test
+    void aSecond401ComesBackWithoutAThirdTry() throws Exception {
+        StubServer server = server(false);
+        server.always("/items", StubServer.json(401, "{\"error\":\"insufficient\"}"));
+
+        ServiceResponse response = client(info()).get(server.url("/items"));
+
+        assertEquals(401, response.getStatus());
+        assertEquals(2, server.requests().size());
+        assertEquals(2, fetcher.count.get());
+    }
+
+    @Test
+    void anOwnTokenTurnedAwayIsNotRenewed() throws Exception {
+        StubServer server = server(false);
+        server.always("/items", StubServer.json(401, "{}"));
+
+        ServiceResponse response = client(info()).get(OWN_TOKEN, server.url("/items"));
+
+        assertEquals(401, response.getStatus());
+        assertEquals(1, server.requests().size());
+        assertEquals(0, fetcher.count.get());
+    }
+
+    @Test
+    void aFailedRenewalThrows() throws Exception {
+        StubServer server = server(false);
+        server.always("/items", StubServer.json(401, "{}"));
+        final AtomicInteger calls = new AtomicInteger();
+        OAuthServiceClient service = new OAuthServiceClient(cache, (info, scopes) -> {
+            if (calls.incrementAndGet() > 1) {
+                throw new OAuthServiceException("Token request for svc/acme failed: HTTP 400: invalid_grant",
+                        "invalid_grant", null, null, 400, null);
+            }
+            return fetcher.fetch(info, scopes);
+        }, executor(), OAuthServiceClient.MAX_RESPONSE_BYTES);
+        service.initialize(info());
+
+        OAuthServiceException e = assertThrows(OAuthServiceException.class, () -> service.get(server.url("/items")));
+
+        assertEquals("invalid_grant", e.getError());
+        assertEquals(1, server.requests().size());
+    }
+
+    @Test
+    void theResendAfterA401GetsOnlyWhatIsLeftOfTheCall() throws Exception {
+        StubServer server = server(false);
+        server.enqueue("/slow", StubServer.json(401, "{}").delay(1000));
+        server.enqueue("/slow", StubServer.json(200, "{}").delay(1000));
+        OAuthServiceClient service = client(info());
+
+        // 1.6 s for the whole call: the first answer takes 1 s, so the resend has about 0.6 s, too little
+        assertThrows(OAuthServiceException.class,
+                () -> service.request(ServiceRequest.get(server.url("/slow")).timeout(Duration.ofMillis(1600))));
+    }
+
+    // ------------------------------------------------------------------ retries
+
+    @Test
+    void aBusyAnswerWithRetryAfterIsRetriedAfterThatPause() throws Exception {
+        StubServer server = server(false);
+        server.enqueue("/items", StubServer.json(429, "{}").header("Retry-After", "2"));
+        server.enqueue("/items", StubServer.json(503, "{}").header("Retry-After", "1"));
+        server.enqueue("/items", StubServer.json(200, "{}"));
+
+        ServiceResponse response = retryingClient().get(server.url("/items"));
+
+        assertEquals(200, response.getStatus());
+        assertEquals(Arrays.asList(2000L, 1000L), sleeps);
+        assertEquals(3, server.requests().size());
+    }
+
+    @Test
+    void withoutRetryAfterOrForA5xxTheAnswerComesBackByDefault() throws Exception {
+        StubServer server = server(false);
+        server.always("/busy", StubServer.json(429, "{}"));
+        server.always("/down", StubServer.json(503, "{}"));
+        server.always("/broken", StubServer.json(500, "{}"));
+        OAuthServiceClient service = retryingClient();
+
+        assertEquals(429, service.get(server.url("/busy")).getStatus());
+        assertEquals(503, service.get(server.url("/down")).getStatus());
+        assertEquals(500, service.post(server.url("/broken"), JSON).getStatus());
+
+        assertEquals(3, server.requests().size());
+        assertTrue(sleeps.isEmpty());
+    }
+
+    @Test
+    void aRefusedConnectionIsRetriedThenReported() throws Exception {
+        int port;
+        try (ServerSocket s = new ServerSocket(0)) {
+            port = s.getLocalPort();
+        }
+        OAuthServiceClient service = retryingClient();
+
+        assertThrows(OAuthServiceException.class, () -> service.get("https://localhost:" + port + "/items"));
+
+        assertEquals(Arrays.asList(500L, 1000L), sleeps);
+    }
+
+    @Test
+    void retryOnFailureAlsoRetries5xxAndBusyAnswersWithoutRetryAfter() throws Exception {
+        StubServer server = server(false);
+        server.enqueue("/items", StubServer.json(500, "{}"));
+        server.enqueue("/items", StubServer.json(429, "{}"));
+        server.enqueue("/items", StubServer.json(200, "{}"));
+
+        ServiceResponse response = retryingClient().request(ServiceRequest.get(server.url("/items")).retryOnFailure());
+
+        assertEquals(200, response.getStatus());
+        assertEquals(Arrays.asList(500L, 1000L), sleeps);
+    }
+
+    @Test
+    void aRetryAfterDateIsReadAgainstTheClock() throws Exception {
+        StubServer server = server(false);
+        String inThreeSeconds = java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME.format(
+                java.time.ZonedDateTime.ofInstant(FIXED.instant().plusSeconds(3), java.time.ZoneOffset.UTC));
+        server.enqueue("/items", StubServer.json(503, "{}").header("Retry-After", inThreeSeconds));
+        server.enqueue("/items", StubServer.json(200, "{}"));
+
+        assertEquals(200, retryingClient().get(server.url("/items")).getStatus());
+
+        assertEquals(Arrays.asList(3000L), sleeps);
+    }
+
+    @Test
+    void aPauseThatDoesNotFitTheCallEndsTheRetries() throws Exception {
+        StubServer server = server(false);
+        server.enqueue("/items", StubServer.json(429, "{}").header("Retry-After", "25"));
+        server.enqueue("/items", StubServer.json(200, "{}"));
+
+        // the call has 20 s; a 25 s pause doesn't fit, so the 429 comes back
+        assertEquals(429, retryingClient().get(server.url("/items")).getStatus());
+
+        assertTrue(sleeps.isEmpty());
+        assertEquals(1, server.requests().size());
+    }
+
+    // ------------------------------------------------------------------ settings
+
+    @Test
+    void theBuilderChecksEverySettingAtOnce() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> OAuthServiceClient.builder()
+                .connectTimeout(Duration.ZERO).readTimeout(null).callTimeout(Duration.ofSeconds(-1))
+                .retries(11).maxResponseBytes(10).build());
+        String m = e.getMessage();
+        for (String part : Arrays.asList("connectTimeout must be positive", "readTimeout must be positive",
+                "callTimeout must be positive", "retries must be 0 to 10", "maxResponseBytes must be 1 KB to 256 MB")) {
+            assertTrue(m.contains(part), m);
+        }
+        assertNotNull(OAuthServiceClient.builder().build());
+        assertNotNull(OAuthServiceClient.builder().callTimeout(Duration.ofMinutes(5)).retries(0).build());
+    }
+
+    @Test
+    void aCallsOwnTimeoutEndsASlowCall() throws Exception {
+        StubServer server = server(false);
+        server.always("/slow", StubServer.json(200, "{}").delay(3000));
+        OAuthServiceClient service = client(info());
+
+        long start = System.nanoTime();
+        assertThrows(OAuthServiceException.class,
+                () -> service.request(ServiceRequest.get(server.url("/slow")).timeout(Duration.ofSeconds(1))));
+
+        assertTrue(System.nanoTime() - start < Duration.ofMillis(2500).toNanos(), "the call ran past its own timeout");
+        assertThrows(IllegalArgumentException.class, () -> ServiceRequest.get(server.url("/slow")).timeout(Duration.ZERO));
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private OAuthServiceClient client(ClientInfo info) {
@@ -342,6 +547,21 @@ class OAuthServiceClientTest {
         if (info != null) {
             service.initialize(info);
         }
+        return service;
+    }
+
+    private static final java.time.Clock FIXED = java.time.Clock.fixed(Instant.parse("2026-11-14T10:00:00Z"),
+            java.time.ZoneOffset.UTC);
+    private final List<Long> sleeps = Collections.synchronizedList(new ArrayList<Long>());
+
+    /** 2 retries with a recording sleeper and a fixed clock; 20 s per call. */
+    private OAuthServiceClient retryingClient() {
+        UrlConnectionTransport transport = new UrlConnectionTransport(Duration.ofSeconds(5), Duration.ofSeconds(10),
+                null, TestTls.clientTrust());
+        HttpExecutor http = new HttpExecutor(transport, 2, Duration.ofMillis(500), millis -> sleeps.add(millis),
+                Duration.ofSeconds(20), FIXED);
+        OAuthServiceClient service = new OAuthServiceClient(cache, fetcher, http, OAuthServiceClient.MAX_RESPONSE_BYTES);
+        service.initialize(info());
         return service;
     }
 

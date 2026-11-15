@@ -1,6 +1,7 @@
 package io.primelogiclab.oauthclient;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -48,9 +49,11 @@ public final class ServiceRequest {
     private final boolean textBody;
     private final List<String> scopes;
     private final String token;
+    private final boolean retryOnFailure;
+    private final Duration timeout;
 
     private ServiceRequest(String method, String url, Map<String, String> headers, byte[] body, boolean textBody,
-                           List<String> scopes, String token) {
+                           List<String> scopes, String token, boolean retryOnFailure, Duration timeout) {
         this.method = method;
         this.url = url;
         this.headers = headers;
@@ -58,6 +61,8 @@ public final class ServiceRequest {
         this.textBody = textBody;
         this.scopes = scopes;
         this.token = token;
+        this.retryOnFailure = retryOnFailure;
+        this.timeout = timeout;
     }
 
     /** A GET to {@code url}. */
@@ -100,7 +105,7 @@ public final class ServiceRequest {
             throw new IllegalArgumentException("url " + problem);
         }
         ServiceRequest request = new ServiceRequest(m, url, emptyHeaders(), null, false,
-                Collections.<String>emptyList(), null);
+                Collections.<String>emptyList(), null, false, null);
         return payload == null ? request : request.body(payload);
     }
 
@@ -124,7 +129,7 @@ public final class ServiceRequest {
         Map<String, String> h = copyHeaders();
         h.remove(name); // the name's case as last set
         h.put(name, value);
-        return new ServiceRequest(method, url, Collections.unmodifiableMap(h), body, textBody, scopes, token);
+        return new ServiceRequest(method, url, Collections.unmodifiableMap(h), body, textBody, scopes, token, retryOnFailure, timeout);
     }
 
     /** This request with the body's {@code Content-Type}, e.g. {@code application/xml}. */
@@ -172,7 +177,7 @@ public final class ServiceRequest {
         if (!problems.isEmpty()) {
             throw new IllegalArgumentException("Invalid scopes: " + String.join("; ", problems));
         }
-        return new ServiceRequest(method, url, headers, body, textBody, checked, token);
+        return new ServiceRequest(method, url, headers, body, textBody, checked, token, retryOnFailure, timeout);
     }
 
     /**
@@ -197,7 +202,42 @@ public final class ServiceRequest {
                 throw new IllegalArgumentException("token has characters not allowed in an HTTP header (spaces, line breaks or non-ASCII)");
             }
         }
-        return new ServiceRequest(method, url, headers, body, textBody, scopes, t);
+        return new ServiceRequest(method, url, headers, body, textBody, scopes, t, retryOnFailure, timeout);
+    }
+
+    /**
+     * This request also retried on a 5xx, on a 429 without Retry-After, and when the connection fails after
+     * the request was sent; at most the client's {@code retries} times, within the call's timeout. Meant for
+     * idempotent calls (GET, PUT, DELETE): a POST retried this way may be carried out twice.
+     *
+     * <p>Without it a call is resent only when nothing was sent (the connection couldn't be made) or the
+     * service answered 429 or 503 with Retry-After, asking to come back.
+     */
+    public ServiceRequest retryOnFailure() {
+        return new ServiceRequest(method, url, headers, body, textBody, scopes, token, true, timeout);
+    }
+
+    /**
+     * This request with its own limit for the whole call (attempts, pauses and the resend after a 401),
+     * instead of the client's call timeout; for a large download, say.
+     *
+     * @throws IllegalArgumentException if the timeout isn't positive
+     */
+    public ServiceRequest timeout(Duration timeout) {
+        if (timeout == null || timeout.isNegative() || timeout.isZero()) {
+            throw new IllegalArgumentException("timeout must be positive");
+        }
+        return new ServiceRequest(method, url, headers, body, textBody, scopes, token, retryOnFailure, timeout);
+    }
+
+    /** True when {@link #retryOnFailure()} was asked for. */
+    public boolean isRetryOnFailure() {
+        return retryOnFailure;
+    }
+
+    /** This call's own timeout, or {@code null} for the client's. */
+    public Duration getTimeout() {
+        return timeout;
     }
 
     public String getMethod() {
@@ -252,7 +292,7 @@ public final class ServiceRequest {
         if (NO_BODY.contains(method)) {
             throw new IllegalArgumentException(method + " requests are sent without a body");
         }
-        return new ServiceRequest(method, url, headers, bytes, text, scopes, token);
+        return new ServiceRequest(method, url, headers, bytes, text, scopes, token, retryOnFailure, timeout);
     }
 
     private Map<String, String> copyHeaders() {

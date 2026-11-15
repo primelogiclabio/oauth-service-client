@@ -137,6 +137,19 @@ class TransportSecurityTest {
         }
     }
 
+    @Test
+    void eachClientCertificateGetsOneSocketFactoryOfItsOwn() {
+        UrlConnectionTransport transport = new UrlConnectionTransport(Duration.ofSeconds(5), Duration.ofSeconds(10),
+                Duration.ofSeconds(20), TestTls.clientTrust());
+        ClientKey tenantA = Fixtures.clientWithChain();
+        ClientKey tenantB = Fixtures.clientWithChain(); // the same certificate, another key object
+
+        SSLSocketFactory a = transport.socketFactoryFor(tenantA);
+
+        org.junit.jupiter.api.Assertions.assertSame(a, transport.socketFactoryFor(tenantA));
+        org.junit.jupiter.api.Assertions.assertNotSame(a, transport.socketFactoryFor(tenantB));
+    }
+
     private static final class TrustEverything implements X509TrustManager {
         @Override
         public void checkClientTrusted(X509Certificate[] chain, String authType) {

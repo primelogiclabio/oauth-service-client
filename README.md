@@ -2,7 +2,7 @@
 
 Java library for backend services that call OAuth-protected external APIs (DocuSign, Salesforce, Jira, ...): it gets and caches access tokens per service and tenant and makes the request.
 
-> **Status: in progress, not released.** Token requests and the API below work; renewing after a 401 and retries are next. The plan and design decisions are in [PROGRESS.md](PROGRESS.md).
+> **Status: in progress, not released.** Token requests and the API below work, with the token renewed after a 401 and safe retries. The plan and design decisions are in [PROGRESS.md](PROGRESS.md).
 
 ## Use
 
@@ -17,9 +17,11 @@ try (OAuthServiceClient service = new OAuthServiceClient()) {
 }
 ```
 
-- The library gets the access token, caches it per service, tenant and scopes until shortly before it expires, and makes the request.
+- The library gets the access token, caches it per service, tenant, user and scopes until shortly before it expires, and makes the request.
 - Every HTTP answer goes back to the caller, whatever its status; only failures without an answer (connection, timeout, TLS, getting the token) raise exceptions.
 - `service.token()` gives the token itself, for response fields such as Salesforce's `instance_url`.
+- When the service answers 401, the token is renewed once and the call sent again; a busy answer with `Retry-After` is retried after that pause.
+- `OAuthServiceClient.builder()` sets the timeouts, retries and response size limit; `ServiceRequest.timeout(...)` sets one call's.
 
 ## Documentation
 

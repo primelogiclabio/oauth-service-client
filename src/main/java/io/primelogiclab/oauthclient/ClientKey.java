@@ -30,9 +30,13 @@ public final class ClientKey {
     }
 
     /**
+     * A key, with its certificate chain when it has one.
+     *
      * @param key   the private key (RSA or EC)
-     * @param chain the certificate chain, leaf first; may be empty when the key has no certificate
-     * @throws IllegalArgumentException if the key is missing or doesn't belong to the leaf certificate
+     * @param chain the certificate chain, leaf first; none when the key has no certificate
+     * @return the client key
+     * @throws IllegalArgumentException if the key is missing, the chain holds {@code null}, or the key doesn't
+     *                                  belong to the leaf certificate
      */
     public static ClientKey of(PrivateKey key, X509Certificate... chain) {
         if (key == null) {
@@ -60,16 +64,23 @@ public final class ClientKey {
     /**
      * A key without a certificate, from unencrypted PEM text (PKCS#8 {@code PRIVATE KEY}, PKCS#1
      * {@code RSA PRIVATE KEY} or SEC1 {@code EC PRIVATE KEY}).
+     *
+     * @param keyPem the PEM text
+     * @return the client key
+     * @throws IllegalArgumentException if the text is blank or holds no readable unencrypted key
      */
     public static ClientKey fromPem(String keyPem) {
         return fromPem(keyPem, null);
     }
 
     /**
-     * A key and its certificate chain from PEM text, e.g. {@code tls.key} and {@code tls.crt}.
+     * A key and its certificate chain from PEM text, such as {@code tls.key} and {@code tls.crt}.
      *
      * @param keyPem              unencrypted private key (PKCS#8, PKCS#1 or SEC1)
      * @param certificateChainPem one or more {@code CERTIFICATE} blocks, leaf first; blank for none
+     * @return the client key
+     * @throws IllegalArgumentException if the key or a certificate can't be read, or the key doesn't belong
+     *                                  to the leaf certificate
      */
     public static ClientKey fromPem(String keyPem, String certificateChainPem) {
         if (Strings.isBlank(keyPem)) {
@@ -86,6 +97,13 @@ public final class ClientKey {
     /**
      * The private key entry of a loaded keystore (PKCS#12 or JKS) that holds exactly one, with its
      * certificate chain; a keystore with several needs {@link #fromKeyStore(KeyStore, char[], String) the alias}.
+     * The keystore and password are only read here, not kept.
+     *
+     * @param keyStore the loaded keystore
+     * @param password the entry's password (for PKCS#12 usually the store password); {@code null} for none
+     * @return the client key
+     * @throws IllegalArgumentException if the keystore has no private key entry or several, or the entry
+     *                                  can't be read
      */
     public static ClientKey fromKeyStore(KeyStore keyStore, char[] password) {
         return fromKeyStore(keyStore, password, null);
@@ -95,9 +113,12 @@ public final class ClientKey {
      * A private key entry of a loaded keystore (PKCS#12 or JKS), with its certificate chain. The
      * keystore and password are only read here, not kept.
      *
-     * @param password the entry's password (for PKCS#12 usually the store password)
+     * @param keyStore the loaded keystore
+     * @param password the entry's password (for PKCS#12 usually the store password); {@code null} for none
      * @param alias    the entry to use; blank when the keystore holds only one private key entry
-     * @throws IllegalArgumentException if there's no such entry, or the alias is blank and there are several
+     * @return the client key
+     * @throws IllegalArgumentException if there's no such entry, the alias is blank and there are several, or
+     *                                  the entry can't be read
      */
     public static ClientKey fromKeyStore(KeyStore keyStore, char[] password, String alias) {
         if (keyStore == null) {
@@ -141,25 +162,48 @@ public final class ClientKey {
         }
     }
 
-    /** A copy with the key ID sent as the JWT {@code kid} header (e.g. the key's ID registered at Okta); blank for none. */
+    /**
+     * This key with a key ID, sent as the {@code kid} header of the JWTs it signs.
+     *
+     * @param keyId the ID the token server knows the key by (e.g. the key's ID registered at Okta); blank for none
+     * @return a copy with the key ID
+     */
     public ClientKey withKeyId(String keyId) {
         return new ClientKey(privateKey, certificateChain, Strings.trim(keyId));
     }
 
+    /**
+     * The private key.
+     *
+     * @return the RSA or EC private key
+     */
     public PrivateKey getPrivateKey() {
         return privateKey;
     }
 
-    /** Leaf first; empty when the key has no certificate. */
+    /**
+     * The key's certificate chain.
+     *
+     * @return the chain, leaf first; empty when the key has no certificate. Unmodifiable
+     */
     public List<X509Certificate> getCertificateChain() {
         return certificateChain;
     }
 
+    /**
+     * Whether the key has a certificate, which mutual TLS needs.
+     *
+     * @return true when the chain isn't empty
+     */
     public boolean hasCertificate() {
         return !certificateChain.isEmpty();
     }
 
-    /** The JWT {@code kid} header, or {@code null}. */
+    /**
+     * The key ID.
+     *
+     * @return the JWT {@code kid} header value, or {@code null} when none is set
+     */
     public String getKeyId() {
         return keyId;
     }

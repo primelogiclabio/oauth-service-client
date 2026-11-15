@@ -5,9 +5,9 @@ public enum Grant {
 
     /** RFC 6749 section 4.4: the client gets a token for itself (secret, signing key or client certificate). */
     CLIENT_CREDENTIALS("client_credentials"),
-    /** RFC 7523: a JWT signed with the client's key is exchanged for a token (e.g. DocuSign, Salesforce). */
+    /** RFC 7523: a JWT signed with the client's key is exchanged for a token (DocuSign, Salesforce). */
     JWT_BEARER("urn:ietf:params:oauth:grant-type:jwt-bearer"),
-    /** RFC 6749 section 6: a refresh token from an earlier user consent is exchanged for a token (e.g. Jira 3LO). */
+    /** RFC 6749 section 6: a refresh token from an earlier user consent is exchanged for a token (as with Jira 3LO). */
     REFRESH_TOKEN("refresh_token");
 
     private final String value;
@@ -16,7 +16,11 @@ public enum Grant {
         this.value = value;
     }
 
-    /** Value sent as the {@code grant_type} parameter. */
+    /**
+     * The grant's name on the wire.
+     *
+     * @return the value sent as the {@code grant_type} parameter
+     */
     public String getValue() {
         return value;
     }

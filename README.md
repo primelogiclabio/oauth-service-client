@@ -2,7 +2,27 @@
 
 Java library for backend services that call OAuth-protected external APIs (DocuSign, Salesforce, Jira, ...): it gets and caches access tokens per service and tenant and makes the request.
 
-> **Status: in progress, not released.** Token requests and the API below work, with the token renewed after a 401 and safe retries. The plan and design decisions are in [PROGRESS.md](PROGRESS.md).
+> **Status: 1.0.0 in preparation, not released yet.** Everything below works and is tested; signing and publishing to Maven Central are what's left. [CHANGELOG.md](CHANGELOG.md) lists what 1.0.0 holds and its known limitations, and [PROGRESS.md](PROGRESS.md) the plan and design decisions.
+
+## Install
+
+Once 1.0.0 is on Maven Central, add it with Maven:
+
+```xml
+<dependency>
+    <groupId>io.primelogiclab</groupId>
+    <artifactId>oauth-service-client</artifactId>
+    <version>1.0.0</version>
+</dependency>
+```
+
+or Gradle:
+
+```groovy
+implementation 'io.primelogiclab:oauth-service-client:1.0.0'
+```
+
+It needs one dependency, Caffeine 2.9, which Maven and Gradle bring along.
 
 ## Use
 
@@ -90,6 +110,8 @@ Every answer comes back as a `ServiceResponse`, whatever its status: check `getS
 
 - [How the library works](docs/library-overview.md) ([HTML with diagrams](docs/library-overview.html)): grants, client authentication, the token cache, retries, errors and a `ClientInfo` for each example service.
 - [Example services](docs/services.md): what each vendor needs, with sources.
+- [Changelog](CHANGELOG.md): what each version holds, and the known limitations.
+- Javadoc: `mvn package` writes it to `target/reports/apidocs`; it is published with each release.
 
 ## Requirements
 

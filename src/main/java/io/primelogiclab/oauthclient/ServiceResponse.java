@@ -16,32 +16,59 @@ public final class ServiceResponse {
         this.response = response;
     }
 
-    /** The HTTP status code. */
+    /**
+     * The HTTP status.
+     *
+     * @return the status code, e.g. 200 or 404
+     */
     public int getStatus() {
         return response.getStatus();
     }
 
-    /** True for a 2xx status. */
+    /**
+     * Whether the service accepted the request.
+     *
+     * @return true for a 2xx status
+     */
     public boolean isSuccessful() {
         return response.isSuccessful();
     }
 
-    /** All headers; names are case-insensitive. Unmodifiable. */
+    /**
+     * The answer's headers.
+     *
+     * @return every header with its values in the order received; names are looked up case-insensitively.
+     *         Unmodifiable
+     */
     public Map<String, List<String>> getHeaders() {
         return response.getHeaders();
     }
 
-    /** The first value of a header (name in any case), or {@code null}. */
+    /**
+     * One header's first value.
+     *
+     * @param name the header's name, in any case
+     * @return its first value, or {@code null} when the answer doesn't have it
+     */
     public String getHeader(String name) {
         return response.header(name);
     }
 
-    /** The body as text, decoded with the charset the Content-Type names (UTF-8 when it names none); empty when there's none. */
+    /**
+     * The body as text.
+     *
+     * @return the body decoded with the charset the {@code Content-Type} names (UTF-8 when it names none);
+     *         empty when there is no body
+     */
     public String getBody() {
         return response.getBody();
     }
 
-    /** A copy of the body's bytes; empty when there's none. */
+    /**
+     * The body as bytes, e.g. for a PDF.
+     *
+     * @return a copy of the body's bytes; empty when there is no body
+     */
     public byte[] getBodyBytes() {
         return response.getBodyBytes();
     }

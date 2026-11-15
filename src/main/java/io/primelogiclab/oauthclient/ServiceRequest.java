@@ -69,27 +69,59 @@ public final class ServiceRequest {
         this.timeout = timeout;
     }
 
-    /** A GET to {@code url}. */
+    /**
+     * A GET.
+     *
+     * @param url the full https URL, without user info
+     * @return the request
+     * @throws IllegalArgumentException if the URL isn't https
+     */
     public static ServiceRequest get(String url) {
         return of("GET", url, null);
     }
 
-    /** A HEAD to {@code url}. */
+    /**
+     * A HEAD.
+     *
+     * @param url the full https URL, without user info
+     * @return the request
+     * @throws IllegalArgumentException if the URL isn't https
+     */
     public static ServiceRequest head(String url) {
         return of("HEAD", url, null);
     }
 
-    /** A DELETE to {@code url}. */
+    /**
+     * A DELETE.
+     *
+     * @param url the full https URL, without user info
+     * @return the request
+     * @throws IllegalArgumentException if the URL isn't https
+     */
     public static ServiceRequest delete(String url) {
         return of("DELETE", url, null);
     }
 
-    /** A POST of {@code payload} (JSON by default; {@code null} for no body) to {@code url}. */
+    /**
+     * A POST.
+     *
+     * @param url     the full https URL, without user info
+     * @param payload the body, JSON unless a content type is set; {@code null} for no body
+     * @return the request
+     * @throws IllegalArgumentException if the URL isn't https
+     */
     public static ServiceRequest post(String url, String payload) {
         return of("POST", url, payload);
     }
 
-    /** A PUT of {@code payload} (JSON by default; {@code null} for no body) to {@code url}. */
+    /**
+     * A PUT.
+     *
+     * @param url     the full https URL, without user info
+     * @param payload the body, JSON unless a content type is set; {@code null} for no body
+     * @return the request
+     * @throws IllegalArgumentException if the URL isn't https
+     */
     public static ServiceRequest put(String url, String payload) {
         return of("PUT", url, payload);
     }
@@ -98,6 +130,9 @@ public final class ServiceRequest {
      * A PATCH of {@code payload} (JSON by default; {@code null} for an empty body) to {@code url}. Needs Java
      * 11 or later: it's sent with {@code java.net.http}, since {@link java.net.HttpURLConnection} can't.
      *
+     * @param url     the full https URL, without user info
+     * @param payload the body, JSON unless a content type is set; {@code null} for an empty body
+     * @return the request
      * @throws IllegalArgumentException on Java 8, or if the URL isn't https
      */
     public static ServiceRequest patch(String url, String payload) {
@@ -107,7 +142,10 @@ public final class ServiceRequest {
     /**
      * A request with any supported method: GET, HEAD, POST, PUT, PATCH (Java 11 or later), DELETE or OPTIONS.
      *
+     * @param method  the method, in capitals
+     * @param url     the full https URL, without user info
      * @param payload the body (JSON by default), {@code null} for none; only POST, PUT and PATCH take one
+     * @return the request
      * @throws IllegalArgumentException if the method isn't supported (PATCH on Java 8), the URL isn't https,
      *         or a body-less method has a payload
      */
@@ -126,6 +164,9 @@ public final class ServiceRequest {
     /**
      * This request with a header; one set before under the same name (in any case) is replaced.
      *
+     * @param name  the header's name
+     * @param value its value
+     * @return a new request
      * @throws IllegalArgumentException if the name isn't a valid header name, the value has a line break or
      *         other control character, or the header is {@code Authorization} or one the JDK sets itself
      */
@@ -149,7 +190,13 @@ public final class ServiceRequest {
         return new ServiceRequest(method, url, Collections.unmodifiableMap(h), body, textBody, scopes, token, retryOnFailure, timeout);
     }
 
-    /** This request with the body's {@code Content-Type}, e.g. {@code application/xml}. */
+    /**
+     * This request with the body's content type.
+     *
+     * @param type the {@code Content-Type} value, e.g. {@code application/xml}
+     * @return a new request
+     * @throws IllegalArgumentException if the value has a line break or other control character
+     */
     public ServiceRequest contentType(String type) {
         return header("Content-Type", type);
     }
@@ -158,6 +205,9 @@ public final class ServiceRequest {
      * This request with a text body, sent as UTF-8; {@code application/json; charset=UTF-8} unless a
      * content type is set.
      *
+     * @param text the body
+     * @return a new request
+     * @throws NullPointerException     if {@code text} is {@code null}
      * @throws IllegalArgumentException if the method is sent without a body (GET, HEAD, DELETE, OPTIONS)
      */
     public ServiceRequest body(String text) {
@@ -170,6 +220,9 @@ public final class ServiceRequest {
     /**
      * This request with a binary body; {@code application/octet-stream} unless a content type is set.
      *
+     * @param bytes the body; copied, so later changes to the array don't show
+     * @return a new request
+     * @throws NullPointerException     if {@code bytes} is {@code null}
      * @throws IllegalArgumentException if the method is sent without a body (GET, HEAD, DELETE, OPTIONS)
      */
     public ServiceRequest body(byte[] bytes) {
@@ -183,6 +236,8 @@ public final class ServiceRequest {
      * This request asking for a library token with these scopes, which replace the client info's
      * defaults for it; none for the defaults.
      *
+     * @param scopes one or more scopes
+     * @return a new request
      * @throws IllegalArgumentException if a scope is blank or has spaces, or the request carries the caller's own token
      */
     public ServiceRequest scopes(String... scopes) {
@@ -201,6 +256,8 @@ public final class ServiceRequest {
      * This request sent with the caller's own access token, as {@code Authorization: Bearer <token>}. The
      * library uses it as is: it isn't cached, and a 401 goes back to the caller.
      *
+     * @param token the access token
+     * @return a new request
      * @throws IllegalArgumentException if the token is blank or has characters not allowed in an HTTP
      *         header, or scopes were set (they apply only to the library's token)
      */
@@ -230,6 +287,8 @@ public final class ServiceRequest {
      *
      * <p>Without it a call is resent only when nothing was sent (the connection couldn't be made) or the
      * service answered 429 or 503 with Retry-After, asking to come back.
+     *
+     * @return a new request
      */
     public ServiceRequest retryOnFailure() {
         return new ServiceRequest(method, url, headers, body, textBody, scopes, token, true, timeout);
@@ -239,6 +298,8 @@ public final class ServiceRequest {
      * This request with its own limit for the whole call (attempts, pauses and the resend after a 401),
      * instead of the client's call timeout; for a large download, say.
      *
+     * @param timeout a positive duration
+     * @return a new request
      * @throws IllegalArgumentException if the timeout isn't positive
      */
     public ServiceRequest timeout(Duration timeout) {
@@ -248,40 +309,75 @@ public final class ServiceRequest {
         return new ServiceRequest(method, url, headers, body, textBody, scopes, token, retryOnFailure, timeout);
     }
 
-    /** True when {@link #retryOnFailure()} was asked for. */
+    /**
+     * Whether failures are retried too.
+     *
+     * @return true when {@link #retryOnFailure()} was asked for
+     */
     public boolean isRetryOnFailure() {
         return retryOnFailure;
     }
 
-    /** This call's own timeout, or {@code null} for the client's. */
+    /**
+     * This call's own timeout.
+     *
+     * @return the timeout, or {@code null} when the client's applies
+     */
     public Duration getTimeout() {
         return timeout;
     }
 
+    /**
+     * The method.
+     *
+     * @return the method in capitals, e.g. {@code GET}
+     */
     public String getMethod() {
         return method;
     }
 
+    /**
+     * The URL.
+     *
+     * @return the full https URL
+     */
     public String getUrl() {
         return url;
     }
 
-    /** The headers set on this request, without the defaults the library adds; unmodifiable, names case-insensitive. */
+    /**
+     * The headers set on this request, without the defaults the library adds.
+     *
+     * @return the headers; names are looked up case-insensitively. Unmodifiable
+     */
     public Map<String, String> getHeaders() {
         return headers;
     }
 
-    /** A copy of the body; {@code null} when there's none. */
+    /**
+     * The body.
+     *
+     * @return a copy of the body's bytes, or {@code null} when there is no body
+     */
     public byte[] getBody() {
         return body == null ? null : body.clone();
     }
 
-    /** The scopes for the library's token; empty for the client info's defaults. Unmodifiable. */
+    /**
+     * The scopes for the library's token.
+     *
+     * @return the scopes, or empty for the client info's defaults. Unmodifiable
+     */
     public List<String> getScopes() {
         return scopes;
     }
 
-    /** True when this request carries the caller's own token. */
+    /**
+     * Whether this request carries the caller's own token. The token itself isn't readable here, so it
+     * can't end up in a log by accident.
+     *
+     * @return true when {@link #token(String)} was set
+     */
     public boolean hasOwnToken() {
         return token != null;
     }

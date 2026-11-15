@@ -6,7 +6,7 @@
 
     <groupId>io.primelogiclab</groupId>
     <artifactId>oauth-service-client</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>1.0.0-SNAPSHOT</version>
     <packaging>jar</packaging>
 
     <name>oauth-service-client</name>
@@ -20,6 +20,27 @@
             <distribution>repo</distribution>
         </license>
     </licenses>
+
+    <developers>
+        <developer>
+            <id>primehojox</id>
+            <name>Andrew H</name>
+            <organization>primelogiclabio</organization>
+            <organizationUrl>https://github.com/primelogiclabio</organizationUrl>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:https://github.com/primelogiclabio/oauth-service-client.git</connection>
+        <developerConnection>scm:git:https://github.com/primelogiclabio/oauth-service-client.git</developerConnection>
+        <url>https://github.com/primelogiclabio/oauth-service-client</url>
+        <tag>HEAD</tag>
+    </scm>
+
+    <issueManagement>
+        <system>GitHub Issues</system>
+        <url>https://github.com/primelogiclabio/oauth-service-client/issues</url>
+    </issueManagement>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -101,6 +122,34 @@
                     </execution>
                 </executions>
             </plugin>
+            <!-- Maven Central wants a javadoc jar; every doclint warning fails the build, so none creep in -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <version>3.12.0</version>
+                <configuration>
+                    <doclint>all</doclint>
+                    <failOnWarnings>true</failOnWarnings>
+                    <quiet>true</quiet>
+                    <additionalOptions>
+                        <additionalOption>-Xmaxwarns</additionalOption>
+                        <additionalOption>10000</additionalOption>
+                    </additionalOptions>
+                    <!--
+                        src/main/java only: src/main/java11 holds just the package-private PATCH transport, which
+                        is built for Java 11 while javadoc runs with release 8
+                    -->
+                    <sourcepath>${project.basedir}/src/main/java</sourcepath>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>attach-javadocs</id>
+                        <goals>
+                            <goal>jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 
@@ -142,6 +191,29 @@
                                     <compileSourceRoots>
                                         <compileSourceRoot>${project.basedir}/src/main/java11</compileSourceRoot>
                                     </compileSourceRoots>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <!--
+                        After compiling, add src/main/java11 as a source root so the sources jar has the PATCH
+                        transport too; added earlier, the release 8 compile would try to build it.
+                    -->
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>build-helper-maven-plugin</artifactId>
+                        <version>3.8.0</version>
+                        <executions>
+                            <execution>
+                                <id>java11-sources-in-sources-jar</id>
+                                <phase>prepare-package</phase>
+                                <goals>
+                                    <goal>add-source</goal>
+                                </goals>
+                                <configuration>
+                                    <sources>
+                                        <source>${project.basedir}/src/main/java11</source>
+                                    </sources>
                                 </configuration>
                             </execution>
                         </executions>

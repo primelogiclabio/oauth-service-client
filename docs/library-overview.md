@@ -31,7 +31,7 @@ The core is generic: it implements the standards (RFC 6749, 7523, 8705) and hand
 | `OAuthServiceClient`, `ServiceRequest`, `ServiceResponse` | Done | Public. `get`, `post`, `put`, `patch`, `delete`, `request(ServiceRequest)` and `token()`; each call is sent once. |
 | Outbound requests | Done | Renew once after a 401, retries (`Retry-After` in seconds or as a date), `retryOnFailure()`, `builder()` settings and a per-call timeout; the mutual TLS socket factory kept per key. |
 | PATCH | Done | Java 11 and later, through `java.net.http` under the same rules; a clear error on Java 8. |
-| Introspection (RFC 7662) | Planned | For tokens that carry no expiry (Salesforce). `introspectionUrl` can already be set but isn't used yet. |
+| Introspection (RFC 7662) | Planned | For tokens that carry no expiry (Salesforce); until then such a token is kept until the service answers 401. |
 | Metadata discovery (RFC 8414) | Planned | An issuer instead of an explicit token URL. |
 | Refresh-token rotation write-back, cool-down after failures, vendor clients | Planned | See [PROGRESS.md](../PROGRESS.md). |
 | DPoP, PS256 signing | Parked | Not planned yet. |
@@ -98,7 +98,7 @@ OAuthServiceClient service = OAuthServiceClient.builder()
 - **Body:** a String goes as UTF-8 with `Content-Type: application/json; charset=UTF-8` unless you set a content type; bytes go as `application/octet-stream`.
 - **Headers:** any valid header except `Authorization` (pass your own token instead) and the ones the JDK sets itself (`Host`, `Content-Length`, `Connection`, ...).
 - **The token:** the library's, from the cache, for the request's scopes or else the `ClientInfo` defaults; or your own, sent as `Bearer` as is, never cached or renewed, and with nothing of the `ClientInfo` (no client certificate, so no allowed-host check either). A request can't carry both scopes and your own token.
-- **The answer:** every status comes back as a `ServiceResponse`: `getStatus()`, `getHeader(name)`, `getBody()` (text by the Content-Type charset) and `getBodyBytes()` (a PDF arrives intact). Up to 16 MB.
+- **The answer:** every status comes back as a `ServiceResponse`: `getStatus()`, `getHeader(name)`, `getBody()` (text by the Content-Type charset) and `getBodyBytes()` (a PDF arrives intact). Up to 16 MB unless the builder sets another limit.
 - **Retries:** a call is resent when nothing was sent, or after a 429 or 503 with `Retry-After`; `retryOnFailure()` adds 5xx and other failures for idempotent calls. A POST is sent in a mode that stops Java itself from sending it twice; Java may resend a GET, PUT or DELETE once if the connection fails before the answer. Redirects aren't followed, so the token never goes to another host.
 - **401:** with the library's token, the token is renewed once (one token request, shared by every thread holding it) and the call sent once more, if the token is at least 60 s old and the call has time left. A token just issued that's turned away isn't the problem (a permission error, a wrong audience), and renewing it every time would use up a vendor's token limit. With your own token the 401 comes back.
 - **Settings:** `OAuthServiceClient.builder()` sets the timeouts, the retries and the response size limit; `ServiceRequest.timeout(...)` sets one call's limit, for a large download. The timeouts also apply to the instance's token requests.
@@ -136,7 +136,6 @@ Build one with `ClientInfo.forTenant(service, tenant)` or `ClientInfo.global(ser
 | `refreshToken` | refresh token grant | The refresh token from an earlier consent. |
 | `scope(...)` | optional | Default scopes, one per argument; the app's scopes replace them per request. |
 | `tokenParameter(name, value)` | optional | Extra form fields, e.g. `audience`. Names the library sets (`grant_type`, `scope`, `client_id`, …) are refused. |
-| `introspectionUrl` | planned | Stored and checked now; used once introspection is built. |
 | `attribute(name, value)` | optional | The caller's own data (an account ID, a base URL); never sent. |
 | `allowedHost(...)` | optional, recommended | Hosts that calls with this token may go to: `api.example.com`, or `*.my.salesforce.com` for any host below that domain (not over an IP address). Without any, every https host is allowed. Keep wildcards narrow: `*.co.uk` or `*.azurewebsites.net` would let anyone with a site there receive the token. |
 
@@ -241,7 +240,7 @@ AccessToken token = service.token("https://graph.microsoft.com/.default");   // 
 
 1. **The JWT's `exp`**, when the access token is a JWT: that's what the service checks. If the token's `iat` is later than the moment the request was sent, the server's clock runs ahead and `exp` is moved back by the gap.
 2. **`expires_in`** from the response, counted from when the request was sent, limited to 0 to 10 years.
-3. **Introspection** (planned): ask `introspectionUrl` for the token's `exp`.
+3. **Introspection** (planned): ask the token server's introspection endpoint for the token's `exp`.
 4. **Unknown**: no guessed lifetime; the token is used until the service answers 401.
 
 ## Retries and timeouts
@@ -285,7 +284,7 @@ Every token request, and every POST to a service, is also sent in a mode that st
 |---|---|---|
 | `IllegalArgumentException` | `ClientInfo.build()` finds problems; a blank scope or one with spaces; a `ServiceRequest` with a non-https URL, a refused header, a body on GET, PATCH on Java 8, or a bad token | Every problem in one message, naming service and tenant; never a URL's path or query, a header value or a token (host names may appear) |
 | `IllegalStateException` | A call needs the library's token but `initialize` wasn't called; any call after `close()` | |
-| `OAuthServiceException` | No usable token: the server answered with an error, the answer isn't a token, the connection, TLS or deadline failed, the thread was interrupted. Or a service call got no answer: connection, TLS, timeout, a response over 16 MB | `getError()`, `getErrorDescription()`, `getErrorUri()`, `getHttpStatus()` (-1 without an answer); the message starts "Token request for service/tenant failed" or "Request failed: METHOD url" (query hidden) |
+| `OAuthServiceException` | No usable token: the server answered with an error, the answer isn't a token, the connection, TLS or deadline failed, the thread was interrupted. Or a service call got no answer: connection, TLS, timeout, a response over the size limit | `getError()`, `getErrorDescription()`, `getErrorUri()`, `getHttpStatus()` (-1 without an answer); the message starts "Token request for service/tenant failed" or "Request failed: METHOD url" (query hidden) |
 
 Messages never contain secrets, tokens or assertions. Server text is cleaned of control characters (so it can't forge log lines) and a non-OAuth error body is cut to 500 characters; credentials the server echoes back are replaced by `****`. A response whose `access_token` or `token_type` isn't safe in an HTTP header is rejected.
 
@@ -389,7 +388,7 @@ ClientInfo.global("bank")
 
 ## Planned and out of scope
 
-- **Next:** a security review of the new code and signing, then release 1.0.0 on Maven Central.
+- **Next:** signing (one GPG key for commits, the tag and the release files), then 1.0.0 on Maven Central. [CHANGELOG.md](../CHANGELOG.md) lists what 1.0.0 holds and its known limitations.
 - **After the basics:** refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body), a short cool-down after failed token requests, introspection, metadata discovery, and vendor clients on top of the core.
 - **Unverified:** whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.
 - **Out of scope:** sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.

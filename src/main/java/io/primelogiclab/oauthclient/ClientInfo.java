@@ -117,86 +117,159 @@ public final class ClientInfo {
         this.allowedHosts = allowedHosts;
     }
 
-    /** Client info for one tenant of a service, e.g. a DocuSign account per customer. */
+    /**
+     * Client info for one tenant of a service, e.g. a DocuSign account per customer.
+     *
+     * @param service the service type as the caller names it, e.g. {@code docusign}
+     * @param tenant  the tenant code; tokens are cached per service and tenant
+     * @return a builder; {@link Builder#build()} checks both are set
+     */
     public static Builder forTenant(String service, String tenant) {
         return new Builder(service, tenant, false);
     }
 
-    /** Client info shared by all tenants of a service, e.g. one Salesforce integration for everyone. */
+    /**
+     * Client info shared by all tenants of a service, e.g. one Salesforce integration for everyone.
+     *
+     * @param service the service type as the caller names it, e.g. {@code salesforce}
+     * @return a builder; {@link Builder#build()} checks the service is set
+     */
     public static Builder global(String service) {
         return new Builder(service, null, true);
     }
 
-    /** The service type as the caller names it, e.g. {@code docusign}. */
+    /**
+     * The service type.
+     *
+     * @return the service type as the caller named it, e.g. {@code docusign}
+     */
     public String getService() {
         return service;
     }
 
-    /** The tenant code, or {@code null} when {@link #isGlobal() global}. */
+    /**
+     * The tenant.
+     *
+     * @return the tenant code, or {@code null} when {@link #isGlobal() global}
+     */
     public String getTenant() {
         return tenant;
     }
 
-    /** True when this client info is shared by all tenants. */
+    /**
+     * Whether this client info is shared by all tenants.
+     *
+     * @return true when built with {@link #global(String)}
+     */
     public boolean isGlobal() {
         return tenant == null;
     }
 
+    /**
+     * The token endpoint.
+     *
+     * @return the https URL tokens are asked for at
+     */
     public String getTokenUrl() {
         return tokenUrl;
     }
 
+    /**
+     * The grant.
+     *
+     * @return how tokens are asked for; {@link Grant#CLIENT_CREDENTIALS} unless set
+     */
     public Grant getGrant() {
         return grant;
     }
 
+    /**
+     * The client ID.
+     *
+     * @return the client ID the token server knows this client by
+     */
     public String getClientId() {
         return clientId;
     }
 
-    /** The client secret, or {@code null}. */
+    /**
+     * The client secret. Keep it out of logs; {@link #toString()} never shows it.
+     *
+     * @return the secret, or {@code null} when none is set
+     */
     public String getClientSecret() {
         return clientSecret;
     }
 
-    /** True when the client secret goes in the request body instead of an HTTP Basic header. */
+    /**
+     * Where the client secret goes.
+     *
+     * @return true when it goes in the request body instead of an HTTP Basic header
+     */
     public boolean isClientSecretInBody() {
         return clientSecretInBody;
     }
 
-    /** Signs the JWT bearer grant's assertion, or the {@code private_key_jwt} client assertion with other grants; or {@code null}. */
+    /**
+     * The signing key.
+     *
+     * @return the key that signs the JWT bearer grant's assertion, or the {@code private_key_jwt} client
+     *         assertion with other grants; or {@code null} when none is set
+     */
     public ClientKey getSigningKey() {
         return signingKey;
     }
 
-    /** Presented in mutual TLS to the token endpoint; or {@code null}. */
+    /**
+     * The client certificate.
+     *
+     * @return the key and certificate presented in mutual TLS, or {@code null} when none is set
+     */
     public ClientKey getClientCertificate() {
         return clientCertificate;
     }
 
-    /** The JWT bearer assertion's {@code sub}, e.g. a DocuSign user ID or Salesforce username; or {@code null}. */
+    /**
+     * The user the token acts for.
+     *
+     * @return the JWT bearer assertion's {@code sub} (e.g. a DocuSign user ID or Salesforce username), or the
+     *         user a refresh token belongs to; or {@code null} when none is set
+     */
     public String getSubject() {
         return subject;
     }
 
-    /** The {@code aud} of the JWT the signing key signs, or {@code null}. */
+    /**
+     * The audience of the JWT the signing key signs.
+     *
+     * @return the {@code aud} value, or {@code null} when none is set
+     */
     public String getAssertionAudience() {
         return assertionAudience;
     }
 
-    /** Extra claims for the JWT the signing key signs, e.g. DocuSign's {@code scope}; unmodifiable. */
+    /**
+     * The extra claims of the JWT the signing key signs.
+     *
+     * @return the claims by name, e.g. DocuSign's {@code scope}, in the order set; unmodifiable
+     */
     public Map<String, String> getAssertionClaims() {
         return assertionClaims;
     }
 
-    /** The refresh token for the refresh token grant, or {@code null}. */
+    /**
+     * The refresh token. Keep it out of logs; {@link #toString()} never shows it.
+     *
+     * @return the refresh token for {@link Grant#REFRESH_TOKEN}, or {@code null} when none is set
+     */
     public String getRefreshToken() {
         return refreshToken;
     }
 
     /**
-     * The default scopes, in the order given, without duplicates; unmodifiable. Scopes the app passes for
-     * a request replace them for that request.
+     * The default scopes. Scopes the app passes for a request replace them for that request.
+     *
+     * @return the scopes in the order given, without duplicates; unmodifiable
      */
     public List<String> getScopes() {
         return scopes;
@@ -220,41 +293,58 @@ public final class ClientInfo {
         return out;
     }
 
-    /** Extra form fields for the token request; unmodifiable. */
+    /**
+     * The extra form fields for the token request.
+     *
+     * @return the fields by name, in the order set; unmodifiable
+     */
     public Map<String, String> getTokenParameters() {
         return tokenParameters;
     }
 
     /**
-     * The token introspection endpoint (RFC 7662), asked for the expiry of a token that doesn't carry
-     * one; or {@code null}.
+     * The token introspection endpoint (RFC 7662), to be asked for the expiry of a token that doesn't carry
+     * one; or {@code null}. Package-private until introspection is built: nothing asks it yet.
      */
-    public String getIntrospectionUrl() {
+    String getIntrospectionUrl() {
         return introspectionUrl;
     }
 
-    /** The caller's own data, never sent anywhere; unmodifiable. */
+    /**
+     * The caller's own data, never sent anywhere.
+     *
+     * @return the attributes by name, in the order set; unmodifiable
+     */
     public Map<String, String> getAttributes() {
         return attributes;
     }
 
-    /** One attribute, or {@code null}. */
+    /**
+     * One attribute.
+     *
+     * @param name the attribute's name
+     * @return its value, or {@code null} when it isn't set
+     */
     public String getAttribute(String name) {
         return attributes.get(name);
     }
 
     /**
-     * The hosts calls with this client info's token or client certificate may go to, lowercase; empty
-     * when any https host is allowed. Unmodifiable.
+     * The hosts calls with this client info's token or client certificate may go to.
+     *
+     * @return the entries, lowercase, in the order given; empty when any https host is allowed. Unmodifiable
      */
     public List<String> getAllowedHosts() {
         return allowedHosts;
     }
 
     /**
-     * True when a call to {@code host} may carry this client info's token or client certificate: there is
-     * no allowed-host list, or the host is on it, exactly or below a {@code *.} entry. Case doesn't matter,
-     * and a trailing dot is ignored.
+     * Whether a call to a host may carry this client info's token or client certificate.
+     *
+     * @param host a host name, e.g. {@code acme.my.salesforce.com}; case doesn't matter, and a trailing dot
+     *             is ignored
+     * @return true when there is no allowed-host list, or the host is on it, exactly or below a {@code *.}
+     *         entry; false for {@code null} or anything that isn't a host name
      */
     public boolean allowsHost(String host) {
         if (host == null) {
@@ -477,36 +567,63 @@ public final class ClientInfo {
             this.global = global;
         }
 
-        /** The token endpoint; must be https. */
-        public Builder tokenUrl(String v) {
-            tokenUrl = Strings.trim(v);
-            return this;
-        }
-
-        /** Defaults to {@link Grant#CLIENT_CREDENTIALS}. */
-        public Builder grant(Grant v) {
-            grant = v;
-            return this;
-        }
-
-        public Builder clientId(String v) {
-            clientId = Strings.trim(v);
-            return this;
-        }
-
-        /** Sent in an HTTP Basic header unless {@link #clientSecretInBody(boolean)} says otherwise. */
-        public Builder clientSecret(String v) {
-            clientSecret = Strings.trim(v);
+        /**
+         * The token endpoint. Required.
+         *
+         * @param tokenUrl an https URL without user info
+         * @return this builder
+         */
+        public Builder tokenUrl(String tokenUrl) {
+            this.tokenUrl = Strings.trim(tokenUrl);
             return this;
         }
 
         /**
-         * True to send {@code client_id} and {@code client_secret} as form fields ({@code client_secret_post},
-         * e.g. Atlassian) instead of the default HTTP Basic header ({@code client_secret_basic}, the method
-         * every OAuth 2.0 server must support).
+         * How tokens are asked for.
+         *
+         * @param grant the grant; {@link Grant#CLIENT_CREDENTIALS} unless set
+         * @return this builder
          */
-        public Builder clientSecretInBody(boolean v) {
-            clientSecretInBody = v;
+        public Builder grant(Grant grant) {
+            this.grant = grant;
+            return this;
+        }
+
+        /**
+         * The client ID. Required: it is also the issuer of the JWTs the signing key signs.
+         *
+         * @param clientId the ID the token server knows this client by
+         * @return this builder
+         */
+        public Builder clientId(String clientId) {
+            this.clientId = Strings.trim(clientId);
+            return this;
+        }
+
+        /**
+         * The client secret, sent in an HTTP Basic header unless {@link #clientSecretInBody(boolean)} says
+         * otherwise. Not together with a {@link #signingKey(ClientKey) signing key}, except with the JWT
+         * bearer grant.
+         *
+         * @param clientSecret the secret
+         * @return this builder
+         */
+        public Builder clientSecret(String clientSecret) {
+            this.clientSecret = Strings.trim(clientSecret);
+            return this;
+        }
+
+        /**
+         * Where the client secret goes.
+         *
+         * @param clientSecretInBody true to send {@code client_id} and {@code client_secret} as form fields
+         *                           ({@code client_secret_post}, e.g. Atlassian) instead of the default HTTP
+         *                           Basic header ({@code client_secret_basic}, the method every OAuth 2.0
+         *                           server must support)
+         * @return this builder
+         */
+        public Builder clientSecretInBody(boolean clientSecretInBody) {
+            this.clientSecretInBody = clientSecretInBody;
             return this;
         }
 
@@ -514,15 +631,24 @@ public final class ClientInfo {
          * The key that signs a JWT: with {@link Grant#JWT_BEARER} the grant's assertion; with the other
          * grants a {@code private_key_jwt} client assertion instead of a client secret (e.g. an Entra ID
          * certificate credential, with the certificate in the key, or an Okta key with its key ID).
+         *
+         * @param signingKey the key
+         * @return this builder
          */
-        public Builder signingKey(ClientKey v) {
-            signingKey = v;
+        public Builder signingKey(ClientKey signingKey) {
+            this.signingKey = signingKey;
             return this;
         }
 
-        /** Client certificate for mutual TLS to the token endpoint (RFC 8705); the key must have a certificate. */
-        public Builder clientCertificate(ClientKey v) {
-            clientCertificate = v;
+        /**
+         * The client certificate for mutual TLS (RFC 8705), presented to the token endpoint and on calls with
+         * this client info's token, for certificate-bound tokens. Alone it authenticates the client.
+         *
+         * @param clientCertificate a key with its certificate
+         * @return this builder
+         */
+        public Builder clientCertificate(ClientKey clientCertificate) {
+            this.clientCertificate = clientCertificate;
             return this;
         }
 
@@ -531,18 +657,24 @@ public final class ClientInfo {
          * user ID, a Salesforce username); with {@link Grant#REFRESH_TOKEN} the user the refresh token
          * belongs to, which is required there and never sent. Tokens are cached per user, so one user never
          * gets another's token; client credentials tokens are shared by the whole tenant.
+         *
+         * @param subject the user, as the token server knows them
+         * @return this builder
          */
-        public Builder subject(String v) {
-            subject = Strings.trim(v);
+        public Builder subject(String subject) {
+            this.subject = Strings.trim(subject);
             return this;
         }
 
         /**
-         * The {@code aud} of the JWT the signing key signs: required for the JWT bearer grant (e.g.
+         * The {@code aud} of the JWT the signing key signs: required for the JWT bearer grant (for example
          * {@code account-d.docusign.com}); for a {@code private_key_jwt} client assertion it defaults to the token URL.
+         *
+         * @param assertionAudience the {@code aud} value
+         * @return this builder
          */
-        public Builder assertionAudience(String v) {
-            assertionAudience = Strings.trim(v);
+        public Builder assertionAudience(String assertionAudience) {
+            this.assertionAudience = Strings.trim(assertionAudience);
             return this;
         }
 
@@ -551,15 +683,25 @@ public final class ClientInfo {
          * that want more than the standard claims, e.g. DocuSign's {@code scope} ({@code "signature
          * impersonation"}). The library sets {@code iss}, {@code sub}, {@code aud}, {@code exp}, {@code iat},
          * {@code nbf} and {@code jti} itself.
+         *
+         * @param name  the claim's name; not one the library sets
+         * @param value the claim's value
+         * @return this builder
          */
         public Builder assertionClaim(String name, String value) {
             assertionClaims.put(Strings.trim(name), value);
             return this;
         }
 
-        /** The refresh token for {@link Grant#REFRESH_TOKEN}. */
-        public Builder refreshToken(String v) {
-            refreshToken = Strings.trim(v);
+        /**
+         * The refresh token for {@link Grant#REFRESH_TOKEN}, which also needs the {@link #subject(String)
+         * user} it belongs to.
+         *
+         * @param refreshToken the refresh token
+         * @return this builder
+         */
+        public Builder refreshToken(String refreshToken) {
+            this.refreshToken = Strings.trim(refreshToken);
             return this;
         }
 
@@ -569,17 +711,29 @@ public final class ClientInfo {
          * which then replace these; leave them out when only the app knows them. A service that wants scopes
          * inside the JWT bearer assertion instead (DocuSign) takes {@link #assertionClaim(String, String)
          * assertionClaim("scope", ...)}.
+         *
+         * @param scopes one or more scopes
+         * @return this builder
          */
-        public Builder scope(String... v) {
-            if (v == null) {
-                scopes.add(null);
+        public Builder scope(String... scopes) {
+            if (scopes == null) {
+                this.scopes.add(null);
             } else {
-                scopes.addAll(Arrays.asList(v));
+                this.scopes.addAll(Arrays.asList(scopes));
             }
             return this;
         }
 
-        /** An extra form field for the token request, e.g. {@code audience} or {@code resource}; set again to replace. */
+        /**
+         * An extra form field for the token request, such as {@code audience} or {@code resource}; set again to
+         * replace.
+         *
+         * @param name  the field's name; not one the library sets ({@code grant_type}, {@code client_id},
+         *              {@code client_secret}, {@code client_assertion}, {@code client_assertion_type},
+         *              {@code assertion}, {@code refresh_token}, {@code scope})
+         * @param value the field's value
+         * @return this builder
+         */
         public Builder tokenParameter(String name, String value) {
             tokenParameters.put(Strings.trim(name), value);
             return this;
@@ -587,11 +741,11 @@ public final class ClientInfo {
 
         /**
          * The token introspection endpoint (RFC 7662), e.g. Salesforce's {@code /services/oauth2/introspect};
-         * must be https. Asked once per new token when the token says nothing about its expiry (no JWT
-         * {@code exp}, no {@code expires_in}), so the token is renewed before it expires instead of after
-         * the service rejects it. Without it such a token is kept until the service answers 401.
+         * must be https. Meant to be asked once per new token that says nothing about its expiry (no JWT
+         * {@code exp}, no {@code expires_in}). Package-private until introspection is built: until then such
+         * a token is kept until the service answers 401.
          */
-        public Builder introspectionUrl(String v) {
+        Builder introspectionUrl(String v) {
             introspectionUrl = Strings.trim(v);
             return this;
         }
@@ -602,23 +756,35 @@ public final class ClientInfo {
          * domain for any host below it ({@code *.my.salesforce.com}, not {@code my.salesforce.com} itself).
          * Without any, every https host is allowed. Recommended whenever a URL can come from a response,
          * such as Salesforce's {@code instance_url}.
+         *
+         * @param hosts one or more host names or {@code *.} entries, without scheme, port or path
+         * @return this builder
          */
-        public Builder allowedHost(String... v) {
-            if (v == null) {
+        public Builder allowedHost(String... hosts) {
+            if (hosts == null) {
                 allowedHosts.add(null);
             } else {
-                allowedHosts.addAll(Arrays.asList(v));
+                allowedHosts.addAll(Arrays.asList(hosts));
             }
             return this;
         }
 
-        /** The caller's own data, kept with the client info and never sent; set again to replace. */
+        /**
+         * The caller's own data, kept with the client info and never sent; set again to replace.
+         *
+         * @param name  the attribute's name
+         * @param value its value
+         * @return this builder
+         */
         public Builder attribute(String name, String value) {
             attributes.put(Strings.trim(name), value);
             return this;
         }
 
         /**
+         * Checks every setting and builds the client info.
+         *
+         * @return the client info, immutable
          * @throws IllegalArgumentException listing every problem found; the message never contains secrets
          */
         public ClientInfo build() {

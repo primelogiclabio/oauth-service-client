@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * An access token from a service's token endpoint, with the other fields of the response (e.g.
+ * An access token from a service's token endpoint, with the other fields of the response (such as
  * Salesforce's {@code instance_url}). Immutable and thread-safe; {@link #toString()} never shows the token.
  */
 public final class AccessToken {
@@ -41,7 +41,7 @@ public final class AccessToken {
     /**
      * The token from a parsed token response. The expiry comes from the {@code exp} claim when the access
      * token is a JWT, since that is the expiry the service checks; else from {@code expires_in}; else it
-     * is unknown (Salesforce) until {@link #withExpiryFrom(Map) introspection} tells.
+     * is unknown (Salesforce), and the token is kept until the service answers 401.
      *
      * @param issuedAt when the token request was sent, so the expiry errs on the early side
      * @throws IllegalArgumentException if the response has no {@code access_token}
@@ -75,50 +75,87 @@ public final class AccessToken {
                 : new AccessToken(value, tokenType, scope, expiresIn, issuedAt, introspected, fields);
     }
 
-    /** The access token itself. */
+    /**
+     * The access token itself. Keep it out of logs.
+     *
+     * @return the token, never {@code null} or empty
+     */
     public String getValue() {
         return value;
     }
 
-    /** The token type as the server sent it; {@code Bearer} when it sent none. */
+    /**
+     * The token type.
+     *
+     * @return the type as the server sent it, or {@code Bearer} when it sent none
+     */
     public String getTokenType() {
         return tokenType;
     }
 
-    /** The granted scope as the server sent it, or {@code null}. */
+    /**
+     * The granted scope.
+     *
+     * @return the space-separated scope as the server sent it, or {@code null} when it sent none
+     */
     public String getScope() {
         return scope;
     }
 
-    /** {@code expires_in} as the server sent it (limited to 0 .. ten years), or {@code null} when it sent none. */
+    /**
+     * The lifetime the server gave.
+     *
+     * @return {@code expires_in} in seconds as the server sent it, limited to 0 to ten years; or {@code null}
+     *         when it sent none
+     */
     public Long getExpiresIn() {
         return expiresIn;
     }
 
-    /** When the token request was sent. */
+    /**
+     * When the token was asked for.
+     *
+     * @return when the token request was sent, so the expiry errs on the early side
+     */
     public Instant getIssuedAt() {
         return issuedAt;
     }
 
     /**
-     * When the token expires: from the JWT's {@code exp}, else {@code expires_in}, else introspection;
-     * {@code null} when none of them told, and the token is kept until the service rejects it.
+     * When the token expires.
+     *
+     * @return the JWT's {@code exp} when the token is a JWT, else {@link #getIssuedAt()} plus {@code expires_in};
+     *         {@code null} when neither tells, and the token is then kept until the service answers 401
      */
     public Instant getExpiresAt() {
         return expiresAt;
     }
 
-    /** One field of the token response, e.g. {@code instance_url}; or {@code null}. */
+    /**
+     * One field of the token response.
+     *
+     * @param name the field's name, e.g. {@code instance_url}
+     * @return its value as parsed from JSON (a string, number, boolean, list or map), or {@code null}
+     */
     public Object getField(String name) {
         return fields.get(name);
     }
 
-    /** Every field of the token response except {@code access_token}; unmodifiable. */
+    /**
+     * The token response's other fields.
+     *
+     * @return every field except {@code access_token}, in the server's order; unmodifiable
+     */
     public Map<String, Object> getFields() {
         return fields;
     }
 
-    /** Value for an {@code Authorization} header, e.g. {@code Bearer eyJ...}. */
+    /**
+     * The token as an {@code Authorization} header value.
+     *
+     * @return the type and the token, e.g. {@code Bearer eyJ...}; a {@code bearer} type in any case is
+     *         written {@code Bearer}
+     */
     public String toAuthorizationHeader() {
         String type = "bearer".equalsIgnoreCase(tokenType) ? "Bearer" : tokenType;
         return type + " " + value;

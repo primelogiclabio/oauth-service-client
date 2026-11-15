@@ -198,7 +198,7 @@ main [id]{scroll-margin-top:64px}
             <tr><td><code>OAuthServiceClient</code>, <code>ServiceRequest</code>, <code>ServiceResponse</code></td><td><span class="pill ok">Done</span></td><td>Public. <code>get</code>, <code>post</code>, <code>put</code>, <code>patch</code>, <code>delete</code>, <code>request(ServiceRequest)</code> and <code>token()</code>; each call is sent once.</td></tr>
             <tr><td>Outbound requests</td><td><span class="pill ok">Done</span></td><td>Renew once after a 401, retries (<code>Retry-After</code> in seconds or as a date), <code>retryOnFailure()</code>, <code>builder()</code> settings and a per-call timeout; the mutual TLS socket factory kept per key.</td></tr>
             <tr><td>PATCH</td><td><span class="pill ok">Done</span></td><td>Java 11 and later, through <code>java.net.http</code> under the same rules; a clear error on Java 8.</td></tr>
-            <tr><td>Introspection (RFC 7662)</td><td><span class="pill todo">Planned</span></td><td>For tokens that carry no expiry (Salesforce). <code>introspectionUrl</code> can already be set but isn't used yet.</td></tr>
+            <tr><td>Introspection (RFC 7662)</td><td><span class="pill todo">Planned</span></td><td>For tokens that carry no expiry (Salesforce); until then such a token is kept until the service answers 401.</td></tr>
             <tr><td>Metadata discovery (RFC 8414)</td><td><span class="pill todo">Planned</span></td><td>An issuer instead of an explicit token URL.</td></tr>
             <tr><td>Refresh-token rotation write-back, cool-down after failures, vendor clients</td><td><span class="pill todo">Planned</span></td><td>See <a href="../PROGRESS.md">PROGRESS.md</a>.</td></tr>
             <tr><td>DPoP, PS256 signing</td><td><span class="pill out">Parked</span></td><td>Not planned yet.</td></tr>
@@ -297,7 +297,7 @@ main [id]{scroll-margin-top:64px}
           <li><strong>Body:</strong> a String goes as UTF-8 with <code>Content-Type: application/json; charset=UTF-8</code> unless you set a content type; bytes go as <code>application/octet-stream</code>.</li>
           <li><strong>Headers:</strong> any valid header except <code>Authorization</code> (pass your own token instead) and the ones the JDK sets itself (<code>Host</code>, <code>Content-Length</code>, <code>Connection</code>, ...).</li>
           <li><strong>The token:</strong> the library's, from the cache, for the request's scopes or else the <code>ClientInfo</code> defaults; or your own, sent as <code>Bearer</code> as is, never cached or renewed, and with nothing of the <code>ClientInfo</code> (no client certificate, so no allowed-host check either). A request can't carry both scopes and your own token.</li>
-          <li><strong>The answer:</strong> every status comes back as a <code>ServiceResponse</code>: <code>getStatus()</code>, <code>getHeader(name)</code>, <code>getBody()</code> (text by the Content-Type charset) and <code>getBodyBytes()</code> (a PDF arrives intact). Up to 16 MB.</li>
+          <li><strong>The answer:</strong> every status comes back as a <code>ServiceResponse</code>: <code>getStatus()</code>, <code>getHeader(name)</code>, <code>getBody()</code> (text by the Content-Type charset) and <code>getBodyBytes()</code> (a PDF arrives intact). Up to 16 MB unless the builder sets another limit.</li>
           <li><strong>Retries:</strong> a call is resent when nothing was sent, or after a 429 or 503 with <code>Retry-After</code>; <code>retryOnFailure()</code> adds 5xx and other failures for idempotent calls. A POST is sent in a mode that stops Java itself from sending it twice; Java may resend a GET, PUT or DELETE once if the connection fails before the answer. Redirects aren't followed, so the token never goes to another host.</li>
           <li><strong>401:</strong> with the library's token, the token is renewed once (one token request, shared by every thread holding it) and the call sent once more, if the token is at least 60 s old and the call has time left. A token just issued that's turned away isn't the problem (a permission error, a wrong audience), and renewing it every time would use up a vendor's token limit. With your own token the 401 comes back.</li>
           <li><strong>Settings:</strong> <code>OAuthServiceClient.builder()</code> sets the timeouts, the retries and the response size limit; <code>ServiceRequest.timeout(...)</code> sets one call's limit, for a large download. The timeouts also apply to the instance's token requests.</li>
@@ -340,7 +340,6 @@ main [id]{scroll-margin-top:64px}
             <tr><td><code>refreshToken</code></td><td>refresh token grant</td><td>The refresh token from an earlier consent.</td></tr>
             <tr><td><code>scope(...)</code></td><td>optional</td><td>Default scopes, one per argument; the app's scopes replace them per request.</td></tr>
             <tr><td><code>tokenParameter(name, value)</code></td><td>optional</td><td>Extra form fields, e.g. <code>audience</code>. Names the library sets (<code>grant_type</code>, <code>scope</code>, <code>client_id</code>, …) are refused.</td></tr>
-            <tr><td><code>introspectionUrl</code></td><td>planned</td><td>Stored and checked now; used once introspection is built.</td></tr>
             <tr><td><code>attribute(name, value)</code></td><td>optional</td><td>The caller's own data (an account ID, a base URL); never sent.</td></tr>
             <tr><td><code>allowedHost(...)</code></td><td>optional, recommended</td><td>Hosts that calls with this token may go to: <code>api.example.com</code>, or <code>*.my.salesforce.com</code> for any host below that domain (not over an IP address). Without any, every https host is allowed. Keep wildcards narrow: <code>*.co.uk</code> or <code>*.azurewebsites.net</code> would let anyone with a site there receive the token.</td></tr>
           </tbody>
@@ -481,7 +480,7 @@ AccessToken token = service.token("https://graph.microsoft.com/.default");   // 
         <ol>
           <li><strong>The JWT's <code>exp</code></strong>, when the access token is a JWT: that's what the service checks. If the token's <code>iat</code> is later than the moment the request was sent, the server's clock runs ahead and <code>exp</code> is moved back by the gap.</li>
           <li><strong><code>expires_in</code></strong> from the response, counted from when the request was sent, limited to 0 to 10 years.</li>
-          <li><strong>Introspection</strong> (planned): ask <code>introspectionUrl</code> for the token's <code>exp</code>.</li>
+          <li><strong>Introspection</strong> (planned): ask the token server's introspection endpoint for the token's <code>exp</code>.</li>
           <li><strong>Unknown</strong>: no guessed lifetime; the token is used until the service answers 401.</li>
         </ol>
       </section>
@@ -533,7 +532,7 @@ AccessToken token = service.token("https://graph.microsoft.com/.default");   // 
           <tbody>
             <tr><td><code>IllegalArgumentException</code></td><td><code>ClientInfo.build()</code> finds problems; a blank scope or one with spaces; a <code>ServiceRequest</code> with a non-https URL, a refused header, a body on GET, PATCH on Java 8, or a bad token</td><td>Every problem in one message, naming service and tenant; never a URL's path or query, a header value or a token (host names may appear)</td></tr>
             <tr><td><code>IllegalStateException</code></td><td>A call needs the library's token but <code>initialize</code> wasn't called; any call after <code>close()</code></td><td></td></tr>
-            <tr><td><code>OAuthServiceException</code></td><td>No usable token: the server answered with an error, the answer isn't a token, the connection, TLS or deadline failed, the thread was interrupted. Or a service call got no answer: connection, TLS, timeout, a response over 16 MB</td><td><code>getError()</code>, <code>getErrorDescription()</code>, <code>getErrorUri()</code>, <code>getHttpStatus()</code> (-1 without an answer); the message starts "Token request for service/tenant failed" or "Request failed: METHOD url" (query hidden)</td></tr>
+            <tr><td><code>OAuthServiceException</code></td><td>No usable token: the server answered with an error, the answer isn't a token, the connection, TLS or deadline failed, the thread was interrupted. Or a service call got no answer: connection, TLS, timeout, a response over the size limit</td><td><code>getError()</code>, <code>getErrorDescription()</code>, <code>getErrorUri()</code>, <code>getHttpStatus()</code> (-1 without an answer); the message starts "Token request for service/tenant failed" or "Request failed: METHOD url" (query hidden)</td></tr>
           </tbody>
         </table></div>
         <p>Messages never contain secrets, tokens or assertions. Server text is cleaned of control characters (so it can't forge log lines) and a non-OAuth error body is cut to 500 characters; credentials the server echoes back are replaced by <code>****</code>. A response whose <code>access_token</code> or <code>token_type</code> isn't safe in an HTTP header is rejected.</p>
@@ -643,7 +642,7 @@ ClientInfo.global("bank")
       <section aria-labelledby="limits">
         <h2 id="limits">Planned and out of scope</h2>
         <ul>
-          <li><strong>Next:</strong> a security review of the new code and signing, then release 1.0.0 on Maven Central.</li>
+          <li><strong>Next:</strong> signing (one GPG key for commits, the tag and the release files), then 1.0.0 on Maven Central. <a href="../CHANGELOG.md">CHANGELOG.md</a> lists what 1.0.0 holds and its known limitations.</li>
           <li><strong>After the basics:</strong> refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body), a short cool-down after failed token requests, introspection, metadata discovery, and vendor clients on top of the core.</li>
           <li><strong>Unverified:</strong> whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.</li>
           <li><strong>Out of scope:</strong> sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.</li>

@@ -39,7 +39,7 @@ import java.util.function.Supplier;
  * ServiceRequest#retryOnFailure()} adds 5xx and other failures for idempotent calls. Timeouts and the
  * number of retries come from the {@link #builder() builder}.
  *
- * <p>Tokens are cached for the whole JVM (per class loader) by service, tenant and scopes, so they outlive
+ * <p>Tokens are cached for the whole JVM (per class loader) by service, tenant, user and scopes, so they outlive
  * {@link #close()}, and instances with the same client info share them. A caller with its own token passes
  * it ({@code post(token, url, json)}); the library then uses it as is, needs no client info, and never
  * renews it.
@@ -121,7 +121,11 @@ public final class OAuthServiceClient implements AutoCloseable {
         this(Shared.CACHE, Shared.DEFAULTS.fetcher, Shared.DEFAULTS.http, MAX_RESPONSE_BYTES);
     }
 
-    /** Settings for a client; {@link Builder#build()} checks them all at once. */
+    /**
+     * Settings for a client with other timeouts, retries or size limit than the defaults.
+     *
+     * @return a builder; {@link Builder#build()} checks the settings all at once
+     */
     public static Builder builder() {
         return new Builder();
     }
@@ -143,6 +147,8 @@ public final class OAuthServiceClient implements AutoCloseable {
      * Sets the client info this instance gets tokens with. May be called again, for example with a
      * rotated secret: a cached token stays in use as long as the settings that shape it are unchanged.
      *
+     * @param clientInfo how to get tokens for the service
+     * @throws NullPointerException  if {@code clientInfo} is {@code null}
      * @throws IllegalStateException if this client is closed
      */
     public void initialize(ClientInfo clientInfo) {
@@ -150,52 +156,123 @@ public final class OAuthServiceClient implements AutoCloseable {
         this.clientInfo = Objects.requireNonNull(clientInfo, "clientInfo");
     }
 
-    /** GET with the library's token. */
+    /**
+     * GET with the library's token.
+     *
+     * @param url the full https URL
+     * @return the answer, whatever its status
+     * @throws OAuthServiceException when there is no answer, as for {@link #request(ServiceRequest)}
+     */
     public ServiceResponse get(String url) {
         return request(ServiceRequest.get(url));
     }
 
-    /** GET with the caller's own token. */
+    /**
+     * GET with the caller's own token.
+     *
+     * @param token the access token, sent as {@code Bearer} and never renewed
+     * @param url   the full https URL
+     * @return the answer, whatever its status
+     * @throws OAuthServiceException when there is no answer, as for {@link #request(ServiceRequest)}
+     */
     public ServiceResponse get(String token, String url) {
         return request(ServiceRequest.get(url).token(token));
     }
 
-    /** POST of {@code payload} (JSON; {@code null} for no body) with the library's token. */
+    /**
+     * POST of {@code payload} with the library's token.
+     *
+     * @param url     the full https URL
+     * @param payload the body, sent as {@code application/json; charset=UTF-8}; {@code null} for no body
+     * @return the answer, whatever its status
+     * @throws OAuthServiceException when there is no answer, as for {@link #request(ServiceRequest)}
+     */
     public ServiceResponse post(String url, String payload) {
         return request(ServiceRequest.post(url, payload));
     }
 
-    /** POST of {@code payload} (JSON; {@code null} for no body) with the caller's own token. */
+    /**
+     * POST of {@code payload} with the caller's own token.
+     *
+     * @param token   the access token, sent as {@code Bearer} and never renewed
+     * @param url     the full https URL
+     * @param payload the body, sent as {@code application/json; charset=UTF-8}; {@code null} for no body
+     * @return the answer, whatever its status
+     * @throws OAuthServiceException when there is no answer, as for {@link #request(ServiceRequest)}
+     */
     public ServiceResponse post(String token, String url, String payload) {
         return request(ServiceRequest.post(url, payload).token(token));
     }
 
-    /** PUT of {@code payload} (JSON; {@code null} for no body) with the library's token. */
+    /**
+     * PUT of {@code payload} with the library's token.
+     *
+     * @param url     the full https URL
+     * @param payload the body, sent as {@code application/json; charset=UTF-8}; {@code null} for no body
+     * @return the answer, whatever its status
+     * @throws OAuthServiceException when there is no answer, as for {@link #request(ServiceRequest)}
+     */
     public ServiceResponse put(String url, String payload) {
         return request(ServiceRequest.put(url, payload));
     }
 
-    /** PUT of {@code payload} (JSON; {@code null} for no body) with the caller's own token. */
+    /**
+     * PUT of {@code payload} with the caller's own token.
+     *
+     * @param token   the access token, sent as {@code Bearer} and never renewed
+     * @param url     the full https URL
+     * @param payload the body, sent as {@code application/json; charset=UTF-8}; {@code null} for no body
+     * @return the answer, whatever its status
+     * @throws OAuthServiceException when there is no answer, as for {@link #request(ServiceRequest)}
+     */
     public ServiceResponse put(String token, String url, String payload) {
         return request(ServiceRequest.put(url, payload).token(token));
     }
 
-    /** PATCH of {@code payload} (JSON; {@code null} for an empty body) with the library's token; Java 11 or later. */
+    /**
+     * PATCH of {@code payload} with the library's token; Java 11 or later.
+     *
+     * @param url     the full https URL
+     * @param payload the body, sent as {@code application/json; charset=UTF-8}; {@code null} for an empty body
+     * @return the answer, whatever its status
+     * @throws OAuthServiceException when there is no answer, as for {@link #request(ServiceRequest)}
+     */
     public ServiceResponse patch(String url, String payload) {
         return request(ServiceRequest.patch(url, payload));
     }
 
-    /** PATCH of {@code payload} (JSON; {@code null} for an empty body) with the caller's own token; Java 11 or later. */
+    /**
+     * PATCH of {@code payload} with the caller's own token; Java 11 or later.
+     *
+     * @param token   the access token, sent as {@code Bearer} and never renewed
+     * @param url     the full https URL
+     * @param payload the body, sent as {@code application/json; charset=UTF-8}; {@code null} for an empty body
+     * @return the answer, whatever its status
+     * @throws OAuthServiceException when there is no answer, as for {@link #request(ServiceRequest)}
+     */
     public ServiceResponse patch(String token, String url, String payload) {
         return request(ServiceRequest.patch(url, payload).token(token));
     }
 
-    /** DELETE with the library's token. */
+    /**
+     * DELETE with the library's token.
+     *
+     * @param url the full https URL
+     * @return the answer, whatever its status
+     * @throws OAuthServiceException when there is no answer, as for {@link #request(ServiceRequest)}
+     */
     public ServiceResponse delete(String url) {
         return request(ServiceRequest.delete(url));
     }
 
-    /** DELETE with the caller's own token. */
+    /**
+     * DELETE with the caller's own token.
+     *
+     * @param token the access token, sent as {@code Bearer} and never renewed
+     * @param url   the full https URL
+     * @return the answer, whatever its status
+     * @throws OAuthServiceException when there is no answer, as for {@link #request(ServiceRequest)}
+     */
     public ServiceResponse delete(String token, String url) {
         return request(ServiceRequest.delete(url).token(token));
     }
@@ -204,10 +281,15 @@ public final class OAuthServiceClient implements AutoCloseable {
      * Sends {@code request} with its own token, or else the library's token for the request's scopes (the
      * client info's when it sets none), and returns the answer, whatever its status.
      *
-     * @throws OAuthServiceException when there's no answer: no token could be had, or the connection, TLS
-     *         handshake or timeout failed, or the response was over 16 MB
-     * @throws IllegalStateException if the request needs the library's token and {@link #initialize(ClientInfo)}
-     *         wasn't called, or this client is closed
+     * @param request the call
+     * @return the answer, whatever its status
+     * @throws OAuthServiceException    when there's no answer: no token could be had, or the connection, TLS
+     *                                  handshake or timeout failed, or the response was over the size limit
+     *                                  (16 MB unless the builder set another)
+     * @throws IllegalArgumentException if the request carries the library's token to a host the client info's
+     *                                  {@link ClientInfo#getAllowedHosts() allowed hosts} don't include
+     * @throws IllegalStateException    if the request needs the library's token and {@link
+     *                                  #initialize(ClientInfo)} wasn't called, or this client is closed
      */
     public ServiceResponse request(ServiceRequest request) {
         checkOpen();
@@ -294,6 +376,7 @@ public final class OAuthServiceClient implements AutoCloseable {
      * caller needs, such as Salesforce's {@code instance_url}.
      *
      * @param scopes scopes replacing the client info's defaults; none for the defaults
+     * @return the token, with the other fields of the token response
      * @throws OAuthServiceException if no token could be had
      * @throws IllegalStateException if {@link #initialize(ClientInfo)} wasn't called, or this client is closed
      * @throws IllegalArgumentException if a scope is blank or has spaces
@@ -333,40 +416,69 @@ public final class OAuthServiceClient implements AutoCloseable {
         private Builder() {
         }
 
-        /** Longest wait for the TCP connection and TLS handshake to a host; default 10 seconds. */
-        public Builder connectTimeout(Duration v) {
-            connectTimeout = v;
+        /**
+         * The longest wait for the TCP connection and TLS handshake to a host.
+         *
+         * @param connectTimeout a positive duration; 10 seconds unless set
+         * @return this builder
+         */
+        public Builder connectTimeout(Duration connectTimeout) {
+            this.connectTimeout = connectTimeout;
             return this;
         }
 
-        /** Longest wait for each read from the server; default 30 seconds. */
-        public Builder readTimeout(Duration v) {
-            readTimeout = v;
+        /**
+         * The longest wait for each read from the server.
+         *
+         * @param readTimeout a positive duration; 30 seconds unless set
+         * @return this builder
+         */
+        public Builder readTimeout(Duration readTimeout) {
+            this.readTimeout = readTimeout;
             return this;
         }
 
         /**
          * Longest one call may take: its attempts, the pauses between them and the resend after a 401;
-         * default 60 seconds. {@link ServiceRequest#timeout(Duration)} sets it for one call.
+         * {@link ServiceRequest#timeout(Duration)} sets it for one call.
+         *
+         * @param callTimeout a positive duration; 60 seconds unless set
+         * @return this builder
          */
-        public Builder callTimeout(Duration v) {
-            callTimeout = v;
+        public Builder callTimeout(Duration callTimeout) {
+            this.callTimeout = callTimeout;
             return this;
         }
 
-        /** Most resends of one call (see {@link ServiceRequest#retryOnFailure()} for when); 0 to 10, default 2. */
-        public Builder retries(int v) {
-            retries = v;
+        /**
+         * The most resends of one call; {@link ServiceRequest#retryOnFailure()} says when a call is resent.
+         *
+         * @param retries 0 to 10; 2 unless set
+         * @return this builder
+         */
+        public Builder retries(int retries) {
+            this.retries = retries;
             return this;
         }
 
-        /** Largest response body accepted, in bytes; 1 KB to 256 MB, default 16 MB. */
-        public Builder maxResponseBytes(int v) {
-            maxResponseBytes = v;
+        /**
+         * The largest response body accepted; a larger one fails the call with {@link OAuthServiceException}.
+         *
+         * @param maxResponseBytes in bytes, 1 KB to 256 MB; 16 MB unless set
+         * @return this builder
+         */
+        public Builder maxResponseBytes(int maxResponseBytes) {
+            this.maxResponseBytes = maxResponseBytes;
             return this;
         }
 
-        /** @throws IllegalArgumentException listing every setting that's out of range */
+        /**
+         * Checks the settings and makes the client.
+         *
+         * @return the client; call {@link OAuthServiceClient#initialize(ClientInfo)} before calls that use the
+         *         library's token
+         * @throws IllegalArgumentException listing every setting that's out of range
+         */
         public OAuthServiceClient build() {
             List<String> problems = new ArrayList<String>();
             checkPositive("connectTimeout", connectTimeout, problems);

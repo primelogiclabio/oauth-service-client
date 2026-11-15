@@ -2,10 +2,7 @@ package io.primelogiclab.oauthclient;
 
 import java.io.IOException;
 import java.io.InterruptedIOException;
-import java.net.ConnectException;
-import java.net.NoRouteToHostException;
 import java.net.SocketTimeoutException;
-import java.net.UnknownHostException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.ZonedDateTime;
@@ -149,7 +146,9 @@ final class HttpExecutor {
             int status = response.getStatus();
             // A proxy can answer 503 after the server processed the request; only a 503 with
             // Retry-After (the server itself asking to come back) counts as "not processed".
-            boolean askedToWait = response.header("Retry-After") != null;
+            // a Retry-After that can't be read doesn't count as the server asking to come back
+            long requested = retryAfterMillis(response.header("Retry-After"));
+            boolean askedToWait = requested >= 0;
             boolean retryStatus;
             switch (retry) {
                 case IF_NOT_PROCESSED:
@@ -162,8 +161,14 @@ final class HttpExecutor {
                     retryStatus = status == 429 || status >= 500;
                     break;
             }
-            long wait = retryAfter(response.header("Retry-After"), delay);
-            if (!retryStatus || attempt >= attempts || !timeLeft(deadline, wait)) {
+            if (!retryStatus || attempt >= attempts) {
+                return response;
+            }
+            if (askedToWait && requested > MAX_RETRY_AFTER_MS) {
+                return response; // the server asked for a longer pause than the library waits: its answer goes back
+            }
+            long wait = askedToWait ? requested : delay;
+            if (!timeLeft(deadline, wait)) {
                 return response;
             }
             LOG.log(Level.FINE, "Attempt {0} of {1} returned HTTP {2}; retrying in {3} ms",
@@ -178,10 +183,13 @@ final class HttpExecutor {
         return deadline == 0 || deadline - System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(pauseMs) > 0;
     }
 
-    /** True when the failure happened before any part of the request reached the server. */
+    /**
+     * True when the failure happened before any part of the request reached the server: only the transports'
+     * own {@link RequestNotSentException} says so. A plain connection error can come from the JDK's silent
+     * resend after the request was sent, so it doesn't count.
+     */
     static boolean notSent(IOException e) {
-        return e instanceof RequestNotSentException || e instanceof ConnectException
-                || e instanceof UnknownHostException || e instanceof NoRouteToHostException;
+        return e instanceof RequestNotSentException;
     }
 
     /** True if {@code e} or a cause is a timeout: the server did not answer in time. */
@@ -223,25 +231,27 @@ final class HttpExecutor {
         return Math.min(delay * 2, MAX_RETRY_AFTER_MS);
     }
 
-    /** The pause Retry-After asks for (seconds, or an HTTP-date), at most {@link #MAX_RETRY_AFTER_MS}; else {@code fallback}. */
-    private long retryAfter(String header, long fallback) {
+    /**
+     * The pause Retry-After asks for, in milliseconds (seconds, or an HTTP-date); {@code -1} when there's no
+     * header or it can't be read. Never negative otherwise, and {@link Long#MAX_VALUE} for a value too large
+     * to count, so a huge one can't overflow into "retry at once".
+     */
+    private long retryAfterMillis(String header) {
         if (header == null) {
-            return fallback;
+            return -1;
         }
         String value = header.trim();
         try {
-            long seconds = Long.parseLong(value);
-            // capped before multiplying, so a huge value can't overflow into "retry at once"
-            return Math.min(Math.max(0, seconds), MAX_RETRY_AFTER_MS / 1000L) * 1000L;
+            long seconds = Math.max(0, Long.parseLong(value));
+            return seconds > Long.MAX_VALUE / 1000L ? Long.MAX_VALUE : seconds * 1000L;
         } catch (NumberFormatException notSeconds) {
             // the HTTP-date form, e.g. Wed, 21 Oct 2026 07:28:00 GMT
         }
         try {
             ZonedDateTime at = ZonedDateTime.parse(value, DateTimeFormatter.RFC_1123_DATE_TIME);
-            long ms = at.toInstant().toEpochMilli() - clock.millis();
-            return Math.min(Math.max(0, ms), MAX_RETRY_AFTER_MS);
+            return Math.max(0, at.toInstant().toEpochMilli() - clock.millis());
         } catch (DateTimeParseException | ArithmeticException unreadable) {
-            return fallback;
+            return -1;
         }
     }
 

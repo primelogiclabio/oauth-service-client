@@ -433,8 +433,8 @@ class ClientInfoTest {
         assertTrue(secretClient().build().getAllowedHosts().isEmpty());
         assertTrue(info.toString().contains("allowedHosts=[api.example.com, *.my.salesforce.com, [::1], 10.0.0.5]"),
                 info.toString());
-        // not a token setting: changing the list keeps the cached token
-        assertEquals(secretClient().build().tokenSettings(), info.tokenSettings());
+        // a token setting: a client info without the list doesn't reuse a token kept to some hosts
+        assertFalse(secretClient().build().tokenSettings().equals(info.tokenSettings()));
     }
 
     @Test
@@ -442,12 +442,37 @@ class ClientInfoTest {
         String m = assertThrows(IllegalArgumentException.class, () -> secretClient().allowedHost(" ", "https://x.com",
                 "x.com/path", "x.com:443", "user@x.com", "*", "*.com", "a.*.com", "x y.com", "[zz]").build()).getMessage();
         for (String part : Arrays.asList("allowedHost must not be blank",
-                "'https://x.com' must be a host name only", "'x.com/path' must be a host name only",
-                "'x.com:443' must be a host name only", "'user@x.com' must be a host name only",
+                "#2 (not shown) must be a host name only", "#3 (not shown) must be a host name only",
+                "'x.com:443' must be a host name only", "#5 (not shown) must be a host name only",
                 "'*' may only use * as its first label", "'*.com' is too broad", "'a.*.com' may only use * as its first label",
                 "'x y.com' is not a valid host name", "'[zz]' is not a valid IPv6 address")) {
             assertTrue(m.contains(part), part + " in " + m);
         }
+    }
+
+    @Test
+    void anEntryThatMayCarryCredentialsIsNeverEchoed() {
+        String m = assertThrows(IllegalArgumentException.class, () -> secretClient()
+                .allowedHost("https://user:s3cr3t-pw@api.example.com/x?key=s3cr3t-key").build()).getMessage();
+        assertFalse(m.contains("s3cr3t"), m);
+        assertTrue(m.contains("allowedHost #1 (not shown)"), m);
+    }
+
+    @Test
+    void aWildcardOverAnIpAddressIsRefused() {
+        assertProblem(secretClient().allowedHost("*.0.0.1"), "'*.0.0.1' can't be a wildcard over an IP address");
+        assertEquals(Arrays.asList("10.0.0.1"), secretClient().allowedHost("10.0.0.1").build().getAllowedHosts());
+    }
+
+    @Test
+    void allowsHostRefusesWhatIsNotAHostName() {
+        ClientInfo info = secretClient().allowedHost("*.example.com").build();
+        assertFalse(info.allowsHost("evil.com/.example.com"));
+        assertFalse(info.allowsHost("evil.com\\.example.com"));
+        assertFalse(info.allowsHost("user@api.example.com"));
+        assertFalse(info.allowsHost("*.example.com"));
+        assertFalse(secretClient().build().allowsHost("evil.com/x"), "even without a list");
+        assertTrue(info.allowsHost("api.example.com"));
     }
 
     @Test

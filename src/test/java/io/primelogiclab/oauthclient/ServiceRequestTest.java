@@ -85,6 +85,17 @@ class ServiceRequestTest {
     }
 
     @Test
+    void headersTheJdkWouldRefuseAreRefusedUpFront() {
+        assertThrows(IllegalArgumentException.class, () -> ServiceRequest.get(URL).header("Expect", "100-continue"));
+        if (UrlConnectionTransport.patchSupported()) {
+            for (String name : Arrays.asList("Date", "From", "Referer", "Warning")) {
+                assertThrows(IllegalArgumentException.class, () -> ServiceRequest.patch(URL, "{}").header(name, "x"), name);
+                ServiceRequest.put(URL, "{}").header(name, "x"); // fine for the other methods
+            }
+        }
+    }
+
+    @Test
     void badHeaderNamesAndValuesAreRefusedWithoutEchoingTheValue() {
         assertThrows(IllegalArgumentException.class, () -> ServiceRequest.get(URL).header("Bad Name", "x"));
         assertThrows(IllegalArgumentException.class, () -> ServiceRequest.get(URL).header(null, "x"));

@@ -55,11 +55,38 @@ public final class OAuthServiceClient implements AutoCloseable {
     static final int MAX_RETRIES = 10;
     static final int MIN_RESPONSE_BYTES = 1024;
     static final int MAX_RESPONSE_BYTES_LIMIT = 256 * 1024 * 1024;
+    /**
+     * A 401 renews the token only when it is at least this old: a token that was just issued and is turned
+     * away isn't the problem (a permission error, a wrong audience), and renewing on every such 401 would
+     * use up a vendor's token request cap.
+     */
+    static final Duration MIN_TOKEN_AGE_FOR_RENEWAL = Duration.ofSeconds(60);
+    /** Most distinct builder settings whose components are shared; beyond that each client gets its own. */
+    static final int MAX_SHARED_SETTINGS = 16;
 
-    /** The JVM-wide token cache, and the token client and executor for default settings, made on first use. */
+    /**
+     * The JVM-wide token cache, and the components per distinct settings, made on first use: clients with the
+     * same settings share one transport, so they don't each make HTTP clients and threads (PATCH).
+     */
     private static final class Shared {
         static final TokenCache CACHE = new TokenCache();
         static final Components DEFAULTS = new Components(CONNECT_TIMEOUT, READ_TIMEOUT, CALL_TIMEOUT, RETRIES);
+        static final java.util.concurrent.ConcurrentMap<List<Object>, Components> BY_SETTINGS =
+                new java.util.concurrent.ConcurrentHashMap<List<Object>, Components>();
+
+        static Components forSettings(Duration connect, Duration read, Duration call, int retries) {
+            List<Object> key = Arrays.<Object>asList(connect, read, call, retries);
+            Components c = BY_SETTINGS.get(key);
+            if (c != null) {
+                return c;
+            }
+            if (BY_SETTINGS.size() >= MAX_SHARED_SETTINGS) {
+                return new Components(connect, read, call, retries);
+            }
+            Components made = new Components(connect, read, call, retries);
+            Components raced = BY_SETTINGS.putIfAbsent(key, made);
+            return raced != null ? raced : made;
+        }
     }
 
     /** One transport, with the token client and the service executor on it. */
@@ -81,6 +108,7 @@ public final class OAuthServiceClient implements AutoCloseable {
     private final TokenFetcher fetcher;
     private final HttpExecutor http;
     private final int maxResponseBytes;
+    private final Duration minTokenAgeForRenewal;
     private volatile ClientInfo clientInfo;
     private volatile boolean closed;
 
@@ -99,10 +127,16 @@ public final class OAuthServiceClient implements AutoCloseable {
     }
 
     OAuthServiceClient(TokenCache cache, TokenFetcher fetcher, HttpExecutor http, int maxResponseBytes) {
+        this(cache, fetcher, http, maxResponseBytes, MIN_TOKEN_AGE_FOR_RENEWAL);
+    }
+
+    OAuthServiceClient(TokenCache cache, TokenFetcher fetcher, HttpExecutor http, int maxResponseBytes,
+                       Duration minTokenAgeForRenewal) {
         this.cache = cache;
         this.fetcher = fetcher;
         this.http = http;
         this.maxResponseBytes = maxResponseBytes;
+        this.minTokenAgeForRenewal = minTokenAgeForRenewal;
     }
 
     /**
@@ -181,23 +215,19 @@ public final class OAuthServiceClient implements AutoCloseable {
         ClientInfo info = clientInfo;
         HttpExecutor.Retry retry = request.isRetryOnFailure() ? HttpExecutor.Retry.ALWAYS : HttpExecutor.Retry.BUSY_OR_NOT_SENT;
         if (request.hasOwnToken()) {
-            if (info != null && info.getClientCertificate() != null) {
-                checkHost(info, request.getUrl()); // the client certificate goes along
-            }
-            // the caller's token is used as is: a 401 goes back to the caller
-            return new ServiceResponse(send(request, "Bearer " + request.ownToken(), info, retry, deadline(request)));
+            // the caller's token is used as is, with nothing of the client info: not its client certificate
+            // (another tenant's token must not go out under this one's certificate), and a 401 goes back
+            return new ServiceResponse(send(request, "Bearer " + request.ownToken(), null, retry, deadline(request)));
         }
         checkHost(requireInfo(info), request.getUrl()); // before any token is fetched
         AccessToken token = cache.get(info, request.getScopes(), fetcher);
         // one deadline for the whole call, the resend after a 401 included
         long deadline = deadline(request);
         HttpResponse response = send(request, token.toAuthorizationHeader(), info, retry, deadline);
-        if (response.getStatus() == 401) {
+        if (response.getStatus() == 401 && oldEnoughToRenew(token) && (deadline == 0 || deadline - System.nanoTime() > 0)) {
             // the service turned the token away, so it didn't carry out the request: renew once, send once more
             AccessToken renewed = cache.renew(info, request.getScopes(), token, fetcher);
-            if (deadline == 0 || deadline - System.nanoTime() > 0) {
-                response = send(request, renewed.toAuthorizationHeader(), info, retry, deadline);
-            }
+            response = send(request, renewed.toAuthorizationHeader(), info, retry, deadline);
         }
         return new ServiceResponse(response);
     }
@@ -217,6 +247,16 @@ public final class OAuthServiceClient implements AutoCloseable {
             throw new IllegalArgumentException("Host " + Strings.safe(String.valueOf(host)) + " isn't an allowed host for "
                     + info.label() + " (ClientInfo.allowedHost)");
         }
+    }
+
+    /** The executor this client sends with; for tests. */
+    HttpExecutor executor() {
+        return http;
+    }
+
+    /** True when {@code token} was issued at least {@link #MIN_TOKEN_AGE_FOR_RENEWAL} ago. */
+    private boolean oldEnoughToRenew(AccessToken token) {
+        return !token.getIssuedAt().plus(minTokenAgeForRenewal).isAfter(java.time.Instant.now());
     }
 
     /** When this call must end, in {@link System#nanoTime()} terms: its own timeout, else the client's. */
@@ -345,7 +385,7 @@ public final class OAuthServiceClient implements AutoCloseable {
                     && callTimeout.equals(CALL_TIMEOUT) && retries == RETRIES) {
                 return new OAuthServiceClient(Shared.CACHE, Shared.DEFAULTS.fetcher, Shared.DEFAULTS.http, maxResponseBytes);
             }
-            Components components = new Components(connectTimeout, readTimeout, callTimeout, retries);
+            Components components = Shared.forSettings(connectTimeout, readTimeout, callTimeout, retries);
             return new OAuthServiceClient(Shared.CACHE, components.fetcher, components.http, maxResponseBytes);
         }
 

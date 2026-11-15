@@ -2,6 +2,7 @@ package io.primelogiclab.oauthclient;
 
 import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -197,6 +198,73 @@ class TransportSecurityTest {
             HttpsURLConnection.setDefaultSSLSocketFactory(jvmDefault);
             Authenticator.setDefault(null);
         }
+    }
+
+    @Test
+    void onlyTheTransportsOwnNotSentCounts() {
+        assertTrue(HttpExecutor.notSent(new RequestNotSentException("not sent", null)));
+        // a plain connection error can come from the JDK's own resend after the request was sent
+        assertFalse(HttpExecutor.notSent(new java.net.ConnectException("refused")));
+        assertFalse(HttpExecutor.notSent(new java.net.UnknownHostException("gone")));
+    }
+
+    @Test
+    void aJvmWideCookieHandlerIsWarnedAboutOnce() throws Exception {
+        final List<String> warnings = Collections.synchronizedList(new ArrayList<String>());
+        java.util.logging.Logger log = java.util.logging.Logger.getLogger(UrlConnectionTransport.class.getName());
+        java.util.logging.Handler handler = new java.util.logging.Handler() {
+            @Override
+            public void publish(java.util.logging.LogRecord record) {
+                if (record.getLevel() == java.util.logging.Level.WARNING) {
+                    warnings.add(record.getMessage());
+                }
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        log.addHandler(handler);
+        UrlConnectionTransport.resetCookieWarning();
+        java.net.CookieHandler.setDefault(new java.net.CookieManager());
+        try (StubServer server = new StubServer(TestTls.serverContext(), false)) {
+            server.always("/x", StubServer.json(200, "{}"));
+            UrlConnectionTransport transport = new UrlConnectionTransport(Duration.ofSeconds(5), Duration.ofSeconds(10),
+                    Duration.ofSeconds(20), TestTls.clientTrust());
+            transport.execute(HttpRequest.get(server.url("/x"), Collections.<String, String>emptyMap()));
+            transport.execute(HttpRequest.get(server.url("/x"), Collections.<String, String>emptyMap()));
+        } finally {
+            java.net.CookieHandler.setDefault(null);
+            log.removeHandler(handler);
+            UrlConnectionTransport.resetCookieWarning();
+        }
+        assertEquals(1, warnings.size(), String.valueOf(warnings));
+        assertTrue(warnings.get(0).contains("CookieHandler"), warnings.get(0));
+    }
+
+    @Test
+    void thePatchClientChecksHostNamesItselfAndRunsOnTheLibrarysThreads() throws Exception {
+        assumeTrue(UrlConnectionTransport.patchSupported(), "PATCH needs Java 11");
+        UrlConnectionTransport transport = new UrlConnectionTransport(Duration.ofSeconds(5), Duration.ofSeconds(10),
+                Duration.ofSeconds(20), TestTls.clientTrust());
+        Object patch = transport.patchTransport();
+        java.lang.reflect.Method clientFor = patch.getClass().getDeclaredMethod("clientFor", ClientKey.class);
+        Object plain = clientFor.invoke(patch, (ClientKey) null);
+        Object withKey = clientFor.invoke(patch, Fixtures.clientWithChain());
+        for (Object client : new Object[] {plain, withKey}) {
+            javax.net.ssl.SSLParameters params = (javax.net.ssl.SSLParameters) Class.forName("java.net.http.HttpClient").getMethod("sslParameters")
+                    .invoke(client);
+            assertEquals("HTTPS", params.getEndpointIdentificationAlgorithm(),
+                    "set on the client, so a JVM-wide switch can't turn host name checks off");
+            java.util.Optional<?> executor = (java.util.Optional<?>) Class.forName("java.net.http.HttpClient").getMethod("executor").invoke(client);
+            assertTrue(executor.isPresent(), "the library's own threads");
+        }
+        assertEquals(((java.util.Optional<?>) Class.forName("java.net.http.HttpClient").getMethod("executor").invoke(plain)).get(),
+                ((java.util.Optional<?>) Class.forName("java.net.http.HttpClient").getMethod("executor").invoke(withKey)).get());
     }
 
     private static final class TrustEverything implements X509TrustManager {

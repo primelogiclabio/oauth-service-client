@@ -115,6 +115,7 @@ class ReadmeExamplesTest {
         TokenClient tokens = new TokenClient(new HttpExecutor(transport, TokenClient.MAX_RETRIES, TokenClient.RETRY_BACKOFF,
                 millis -> { }, Duration.ofSeconds(20)), Clock.systemUTC());
         HttpExecutor http = new HttpExecutor(transport, 2, Duration.ofMillis(500), millis -> { }, Duration.ofSeconds(20));
-        return new OAuthServiceClient(new TokenCache(), tokens, http, OAuthServiceClient.MAX_RESPONSE_BYTES);
+        // renews even a brand-new token after a 401, so the stand-in's 401 can be checked at once
+        return new OAuthServiceClient(new TokenCache(), tokens, http, OAuthServiceClient.MAX_RESPONSE_BYTES, Duration.ZERO);
     }
 }

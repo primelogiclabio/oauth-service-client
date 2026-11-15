@@ -406,7 +406,7 @@ class OAuthServiceClientTest {
                         "invalid_grant", null, null, 400, null);
             }
             return fetcher.fetch(info, scopes);
-        }, executor(), OAuthServiceClient.MAX_RESPONSE_BYTES);
+        }, executor(), OAuthServiceClient.MAX_RESPONSE_BYTES, Duration.ZERO);
         service.initialize(info());
 
         OAuthServiceException e = assertThrows(OAuthServiceException.class, () -> service.get(server.url("/items")));
@@ -559,21 +559,64 @@ class OAuthServiceClientTest {
     }
 
     @Test
-    void anOwnTokenIsCheckedOnlyWhenTheClientCertificateGoesAlong() throws Exception {
-        StubServer server = server(true);
-        server.always("/items", StubServer.json(200, "{}"));
+    void anOwnTokenCarriesNothingOfTheClientInfo() throws Exception {
+        StubServer needsCertificate = server(true);
+        needsCertificate.always("/items", StubServer.json(200, "{}"));
         OAuthServiceClient withCertificate = client(ClientInfo.forTenant("svc", "acme").tokenUrl("https://login.example.com/token")
                 .clientId("id").clientCertificate(Fixtures.clientWithChain()).allowedHost("*.example.com").build());
 
-        assertThrows(IllegalArgumentException.class, () -> withCertificate.get(OWN_TOKEN, server.url("/items")));
-        assertTrue(server.requests().isEmpty());
+        // no client certificate goes with the caller's own token, so a server that needs one refuses the call;
+        // and the allowed hosts don't apply, since nothing of the client info is sent
+        assertThrows(OAuthServiceException.class, () -> withCertificate.get(OWN_TOKEN, needsCertificate.url("/items")));
+        assertTrue(needsCertificate.requests().isEmpty());
 
         StubServer plain = server(false);
         plain.always("/items", StubServer.json(200, "{}"));
-        OAuthServiceClient withoutCertificate = client(infoBuilder().allowedHost("*.example.com").build());
-        // nothing of the client info is sent with the caller's own token here, so the list doesn't apply
-        assertEquals(200, withoutCertificate.get(OWN_TOKEN, plain.url("/items")).getStatus());
+        assertEquals(200, withCertificate.get(OWN_TOKEN, plain.url("/items")).getStatus());
+        assertNull(plain.last().clientCertificate);
         assertEquals(0, fetcher.count.get());
+    }
+
+    @Test
+    void aBrandNewTokenTurnedAwayIsNotRenewed() throws Exception {
+        StubServer server = server(false);
+        server.always("/items", StubServer.json(401, "{\"error\":\"forbidden\"}"));
+        OAuthServiceClient service = new OAuthServiceClient(cache, fetcher, executor(), OAuthServiceClient.MAX_RESPONSE_BYTES);
+        service.initialize(info());
+
+        // the token was just issued: a 401 isn't about it (a permission error), so no token request
+        assertEquals(401, service.get(server.url("/items")).getStatus());
+        assertEquals(401, service.get(server.url("/items")).getStatus());
+
+        assertEquals(1, fetcher.count.get());
+        assertEquals(2, server.requests().size());
+    }
+
+    @Test
+    void aLongOrUnreadableRetryAfterIsNotRetried() throws Exception {
+        StubServer server = server(false);
+        server.enqueue("/hour", StubServer.json(429, "{}").header("Retry-After", "3600"));
+        server.enqueue("/soon", StubServer.json(503, "{}").header("Retry-After", "soon"));
+        OAuthServiceClient service = retryingClient();
+
+        // asked for longer than the library waits (30 s): the answer comes back, not an early resend
+        // the call has 2 hours, so the hour would fit: still not waited for
+        assertEquals(429, service.request(ServiceRequest.get(server.url("/hour")).timeout(Duration.ofHours(2))).getStatus());
+        // an unreadable Retry-After isn't the server asking to come back
+        assertEquals(503, service.post(server.url("/soon"), JSON).getStatus());
+
+        assertTrue(sleeps.isEmpty());
+        assertEquals(2, server.requests().size());
+    }
+
+    @Test
+    void clientsWithTheSameSettingsShareTheirComponents() {
+        OAuthServiceClient a = OAuthServiceClient.builder().callTimeout(Duration.ofSeconds(42)).build();
+        OAuthServiceClient b = OAuthServiceClient.builder().callTimeout(Duration.ofSeconds(42)).build();
+        OAuthServiceClient c = OAuthServiceClient.builder().callTimeout(Duration.ofSeconds(43)).build();
+        assertSame(a.executor(), b.executor());
+        assertFalse(a.executor() == c.executor());
+        assertSame(new OAuthServiceClient().executor(), OAuthServiceClient.builder().build().executor());
     }
 
     // ------------------------------------------------------------------ PATCH (Java 11 and later)
@@ -635,6 +678,56 @@ class OAuthServiceClientTest {
     }
 
     @Test
+    void aPatchIsRefusedWhenAJvmWideSettingWouldBreakTheRules() throws Exception {
+        assumeTrue(UrlConnectionTransport.patchSupported(), "PATCH needs Java 11");
+        StubServer server = server(false);
+        server.always("/items/1", StubServer.json(204, ""));
+        OAuthServiceClient service = client(info());
+
+        System.setProperty("jdk.httpclient.enableAllMethodRetry", "true");
+        try {
+            OAuthServiceException e = assertThrows(OAuthServiceException.class, () -> service.patch(server.url("/items/1"), JSON));
+            assertTrue(e.getMessage().contains("enableAllMethodRetry"), e.getMessage());
+        } finally {
+            System.clearProperty("jdk.httpclient.enableAllMethodRetry");
+        }
+
+        java.net.ProxySelector jvmProxies = java.net.ProxySelector.getDefault();
+        java.net.ProxySelector.setDefault(new java.net.ProxySelector() {
+            @Override
+            public List<java.net.Proxy> select(java.net.URI uri) {
+                return Collections.singletonList(new java.net.Proxy(java.net.Proxy.Type.SOCKS,
+                        new java.net.InetSocketAddress("127.0.0.1", 1080)));
+            }
+
+            @Override
+            public void connectFailed(java.net.URI uri, java.net.SocketAddress sa, IOException ioe) {
+            }
+        });
+        try {
+            OAuthServiceException e = assertThrows(OAuthServiceException.class, () -> service.patch(server.url("/items/1"), JSON));
+            assertTrue(e.getMessage().contains("SOCKS"), e.getMessage());
+        } finally {
+            java.net.ProxySelector.setDefault(jvmProxies);
+        }
+        assertTrue(server.requests().isEmpty());
+        assertEquals(204, service.patch(server.url("/items/1"), JSON).getStatus());
+    }
+
+    @Test
+    void aPatchHeaderTheJdkRefusesIsReportedWithoutItsValue() throws Exception {
+        assumeTrue(UrlConnectionTransport.patchSupported(), "PATCH needs Java 11");
+        StubServer server = server(false);
+        server.always("/items/1", StubServer.json(204, ""));
+
+        OAuthServiceException e = assertThrows(OAuthServiceException.class, () -> client(info())
+                .request(ServiceRequest.patch(server.url("/items/1"), JSON).header("X-Name", "secret\u0100value")));
+
+        assertFalse(e.getMessage().contains("secret"), e.getMessage());
+        assertTrue(server.requests().isEmpty());
+    }
+
+    @Test
     void aPatchWhoseConnectionIsRefusedIsRetriedThenReported() throws Exception {
         assumeTrue(UrlConnectionTransport.patchSupported(), "PATCH needs Java 11");
         int port;
@@ -651,7 +744,8 @@ class OAuthServiceClientTest {
     // ------------------------------------------------------------------ helpers
 
     private OAuthServiceClient client(ClientInfo info) {
-        OAuthServiceClient service = new OAuthServiceClient(cache, fetcher, executor(), OAuthServiceClient.MAX_RESPONSE_BYTES);
+        OAuthServiceClient service = new OAuthServiceClient(cache, fetcher, executor(), OAuthServiceClient.MAX_RESPONSE_BYTES,
+                Duration.ZERO);
         if (info != null) {
             service.initialize(info);
         }
@@ -668,7 +762,8 @@ class OAuthServiceClientTest {
                 null, TestTls.clientTrust());
         HttpExecutor http = new HttpExecutor(transport, 2, Duration.ofMillis(500), millis -> sleeps.add(millis),
                 Duration.ofSeconds(20), FIXED);
-        OAuthServiceClient service = new OAuthServiceClient(cache, fetcher, http, OAuthServiceClient.MAX_RESPONSE_BYTES);
+        OAuthServiceClient service = new OAuthServiceClient(cache, fetcher, http, OAuthServiceClient.MAX_RESPONSE_BYTES,
+                Duration.ZERO);
         service.initialize(info());
         return service;
     }

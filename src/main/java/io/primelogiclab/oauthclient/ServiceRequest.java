@@ -40,7 +40,11 @@ public final class ServiceRequest {
     /** Headers HttpURLConnection sets itself and quietly drops when a caller sets them (its restricted list). */
     private static final Set<String> JDK_HEADERS = new HashSet<String>(Arrays.asList(
             "access-control-request-headers", "access-control-request-method", "connection", "content-length",
-            "content-transfer-encoding", "host", "keep-alive", "origin", "trailer", "transfer-encoding", "upgrade", "via"));
+            "content-transfer-encoding", "host", "keep-alive", "origin", "trailer", "transfer-encoding", "upgrade", "via",
+            "expect"));
+    /** More headers java.net.http, which sends PATCH, refuses (Java 11); refused for PATCH up front. */
+    private static final Set<String> PATCH_REFUSED_HEADERS = new HashSet<String>(
+            Arrays.asList("date", "from", "referer", "warning"));
 
     private final String method;
     private final String url;
@@ -136,6 +140,9 @@ public final class ServiceRequest {
         if (JDK_HEADERS.contains(name.toLowerCase(Locale.ROOT))) {
             throw new IllegalArgumentException("Header " + name + " is set by the JDK and can't be set here");
         }
+        if ("PATCH".equals(method) && PATCH_REFUSED_HEADERS.contains(name.toLowerCase(Locale.ROOT))) {
+            throw new IllegalArgumentException("Header " + name + " can't be sent with PATCH (java.net.http refuses it)");
+        }
         Map<String, String> h = copyHeaders();
         h.remove(name); // the name's case as last set
         h.put(name, value);
@@ -217,8 +224,9 @@ public final class ServiceRequest {
 
     /**
      * This request also retried on a 5xx, on a 429 without Retry-After, and when the connection fails after
-     * the request was sent; at most the client's {@code retries} times, within the call's timeout. Meant for
-     * idempotent calls (GET, PUT, DELETE): a POST retried this way may be carried out twice.
+     * the request was sent (not after a read timeout: the service may still be working on it); at most the
+     * client's {@code retries} times, within the call's timeout. Meant for idempotent calls (GET, PUT,
+     * DELETE): a POST retried this way may be carried out twice.
      *
      * <p>Without it a call is resent only when nothing was sent (the connection couldn't be made) or the
      * service answered 429 or 503 with Retry-After, asking to come back.

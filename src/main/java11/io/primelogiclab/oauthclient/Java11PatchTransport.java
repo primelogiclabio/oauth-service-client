@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.net.ConnectException;
+import java.net.Proxy;
 import java.net.ProxySelector;
 import java.net.SocketTimeoutException;
 import java.net.URI;
@@ -18,11 +19,17 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
+import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLHandshakeException;
+import javax.net.ssl.SSLParameters;
 import javax.net.ssl.TrustManager;
 
 import com.github.benmanes.caffeine.cache.Cache;
@@ -44,6 +51,13 @@ final class Java11PatchTransport implements HttpTransport {
     /** Most client certificates whose JDK client is kept; each client has a selector thread of its own. */
     static final long MAX_CERTIFICATE_CLIENTS = 50;
 
+    /**
+     * The JDK clients' worker threads: the library's daemon threads (its own class loader, no inherited thread
+     * locals), so a client never keeps a web application loaded.
+     */
+    private static final ExecutorService THREADS = new ThreadPoolExecutor(0, Integer.MAX_VALUE, 30, TimeUnit.SECONDS,
+            new SynchronousQueue<Runnable>(), r -> UrlConnectionTransport.daemon(r, "oauth-service-client-http-patch"));
+
     private final Duration connectTimeout; // null = the JDK's default
     private final long requestTimeoutMs;   // 0 = none of its own
     private final TrustManager[] trustManagers;
@@ -64,10 +78,17 @@ final class Java11PatchTransport implements HttpTransport {
     }
 
     private HttpClient newClient(ClientKey certificate) {
+        SSLContext tls = Tls.context(certificate, trustManagers);
+        // host name checks set here, so the JVM-wide jdk.internal.httpclient.disableHostnameVerification
+        // can't turn them off: java.net.http keeps a set identification algorithm
+        SSLParameters params = tls.getDefaultSSLParameters();
+        params.setEndpointIdentificationAlgorithm("HTTPS");
         HttpClient.Builder b = HttpClient.newBuilder()
                 .version(HttpClient.Version.HTTP_1_1)
                 .followRedirects(HttpClient.Redirect.NEVER)
-                .sslContext(Tls.context(certificate, trustManagers));
+                .sslContext(tls)
+                .sslParameters(params)
+                .executor(THREADS);
         // no authenticator: java.net.http then returns a 401 as an answer and never asks the JVM's default
         // Authenticator (with one set, a 401 becomes an IOException). So a proxy that asks for a login
         // isn't supported for PATCH.
@@ -78,7 +99,39 @@ final class Java11PatchTransport implements HttpTransport {
         if (connectTimeout != null) {
             b.connectTimeout(connectTimeout);
         }
-        return b.build();
+        // built on one of the library's threads: the client's selector thread inherits from the thread that
+        // builds it (its class loader, its thread locals), and must not inherit the caller's
+        try {
+            return THREADS.submit(b::build).get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new OAuthServiceException("Interrupted while setting up the PATCH client", e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            throw cause instanceof RuntimeException ? (RuntimeException) cause
+                    : new OAuthServiceException("Cannot set up the PATCH client: " + cause, cause);
+        }
+    }
+
+    /**
+     * Refuses a PATCH that would break the library's rules because of a JVM-wide setting: a resend
+     * (jdk.httpclient.enableAllMethodRetry), or a direct connection that skips a SOCKS proxy, which
+     * java.net.http can't use.
+     */
+    private static void checkJvmSettings(URI uri) {
+        if (Boolean.parseBoolean(System.getProperty("jdk.httpclient.enableAllMethodRetry"))) {
+            throw new OAuthServiceException("PATCH refused: the JVM-wide property jdk.httpclient.enableAllMethodRetry=true "
+                    + "would let Java resend it");
+        }
+        ProxySelector proxies = ProxySelector.getDefault();
+        if (proxies != null) {
+            for (Proxy p : proxies.select(uri)) {
+                if (p.type() == Proxy.Type.SOCKS) {
+                    throw new OAuthServiceException("PATCH refused: a SOCKS proxy is configured, which java.net.http "
+                            + "can't use, so it would connect directly");
+                }
+            }
+        }
     }
 
     @Override
@@ -88,23 +141,8 @@ final class Java11PatchTransport implements HttpTransport {
             long left = Math.max(1, request.getTimeout().toMillis());
             limitMs = limitMs <= 0 ? left : Math.min(limitMs, left);
         }
-        java.net.http.HttpRequest.Builder rb;
-        try {
-            byte[] body = request.getBody();
-            rb = java.net.http.HttpRequest.newBuilder(URI.create(request.getUrl()))
-                    .method(request.getMethod(), body == null
-                            ? java.net.http.HttpRequest.BodyPublishers.noBody()
-                            : java.net.http.HttpRequest.BodyPublishers.ofByteArray(body));
-            for (Map.Entry<String, String> h : request.getHeaders().entrySet()) {
-                rb.header(h.getKey(), h.getValue());
-            }
-        } catch (IllegalArgumentException e) {
-            // the JDK's message may quote a header value, which may be a credential: leave it out
-            throw new RequestNotSentException("The request can't be sent with java.net.http (a header it doesn't allow?)", null);
-        }
-        if (limitMs > 0) {
-            rb.timeout(Duration.ofMillis(limitMs));
-        }
+        URI uri = URI.create(request.getUrl());
+        checkJvmSettings(uri);
         int maxBytes = request.getMaxResponseBytes() > 0
                 ? request.getMaxResponseBytes() : UrlConnectionTransport.DEFAULT_MAX_RESPONSE_BYTES;
         long deadline = limitMs > 0 ? System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(limitMs) : 0;
@@ -113,16 +151,39 @@ final class Java11PatchTransport implements HttpTransport {
             UrlConnectionTransport.acquire(host, deadline, limitMs);
         }
         try {
+            java.net.http.HttpRequest.Builder rb;
+            try {
+                byte[] body = request.getBody();
+                rb = java.net.http.HttpRequest.newBuilder(uri)
+                        .method(request.getMethod(), body == null
+                                ? java.net.http.HttpRequest.BodyPublishers.noBody()
+                                : java.net.http.HttpRequest.BodyPublishers.ofByteArray(body));
+                for (Map.Entry<String, String> h : request.getHeaders().entrySet()) {
+                    rb.header(h.getKey(), h.getValue());
+                }
+            } catch (IllegalArgumentException e) {
+                // the JDK's message may quote a header value, which may be a credential: leave it out; not
+                // "not sent" for the retries, since it would fail the same way again
+                throw new IOException("The request can't be sent with java.net.http (a header it doesn't allow?)");
+            }
+            if (deadline != 0) { // only what is left after waiting for a slot
+                rb.timeout(Duration.ofNanos(Math.max(1, deadline - System.nanoTime())));
+            }
+            final AtomicReference<LimitedBody> reading = new AtomicReference<LimitedBody>();
             CompletableFuture<java.net.http.HttpResponse<byte[]>> answer = clientFor(request.getClientCertificate())
-                    .sendAsync(rb.build(), info -> new LimitedBody(maxBytes));
+                    .sendAsync(rb.build(), info -> {
+                        LimitedBody b = new LimitedBody(maxBytes);
+                        reading.set(b);
+                        return b;
+                    });
             java.net.http.HttpResponse<byte[]> r;
             try {
                 r = deadline == 0 ? answer.get() : answer.get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
             } catch (TimeoutException e) {
-                answer.cancel(true); // ends the exchange and closes its connection
+                abort(answer, reading.get());
                 throw new SocketTimeoutException("Request took longer than " + limitMs + " ms");
             } catch (InterruptedException e) {
-                answer.cancel(true);
+                abort(answer, reading.get());
                 Thread.currentThread().interrupt();
                 throw new InterruptedIOException("Interrupted while waiting for the response");
             } catch (ExecutionException e) {
@@ -134,6 +195,17 @@ final class Java11PatchTransport implements HttpTransport {
                 UrlConnectionTransport.release(host);
             }
         }
+    }
+
+    /**
+     * Ends the exchange: cancelling the body subscription closes the connection on every Java 11+ version
+     * (cancelling the future does only from Java 16), so a server trickling its body can't keep it open.
+     */
+    private static void abort(CompletableFuture<?> answer, LimitedBody body) {
+        if (body != null) {
+            body.abort();
+        }
+        answer.cancel(true);
     }
 
     /** The JDK client's failure as the library's transport failures: "not sent" when no connection was made. */
@@ -159,7 +231,7 @@ final class Java11PatchTransport implements HttpTransport {
         private final int limit;
         private final ByteArrayOutputStream buf = new ByteArrayOutputStream();
         private final CompletableFuture<byte[]> result = new CompletableFuture<byte[]>();
-        private Flow.Subscription subscription;
+        private volatile Flow.Subscription subscription;
 
         LimitedBody(int limit) {
             this.limit = limit;
@@ -192,6 +264,15 @@ final class Java11PatchTransport implements HttpTransport {
                 b.get(chunk);
                 buf.write(chunk, 0, n);
             }
+        }
+
+        /** Stops reading and closes the exchange. */
+        void abort() {
+            Flow.Subscription s = subscription;
+            if (s != null) {
+                s.cancel();
+            }
+            result.completeExceptionally(new IOException("Request abandoned at its deadline"));
         }
 
         @Override

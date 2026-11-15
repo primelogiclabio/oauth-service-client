@@ -122,8 +122,9 @@ class KeycloakTokenTest {
     @Test
     void aTokenTheServiceTurnsAwayIsRenewedOnceAndTheCallSentAgain() {
         ClientInfo info = secretClient("service-client", "service-dev-secret").scope("openid").build();
+        // renews even a brand-new token, since the test revokes it right after it was issued
         OAuthServiceClient service = new OAuthServiceClient(new TokenCache(), client, executor(),
-                OAuthServiceClient.MAX_RESPONSE_BYTES);
+                OAuthServiceClient.MAX_RESPONSE_BYTES, Duration.ZERO);
         service.initialize(info);
         String userinfo = base + "/realms/" + REALM + "/protocol/openid-connect/userinfo";
         ServiceResponse before = service.get(userinfo);

@@ -94,17 +94,17 @@ OAuthServiceClient service = OAuthServiceClient.builder()
         .build();
 ```
 
-- **Methods:** GET, HEAD, POST, PUT, PATCH, DELETE and OPTIONS; GET, HEAD, DELETE and OPTIONS take no body. PATCH needs Java 11 or later: `HttpURLConnection` can't send it, so it goes through Java's `java.net.http` client under the same TLS, certificate, timeout, size and redirect rules. On Java 8 it fails with a clear error, and it can't go through a proxy that asks for a login.
+- **Methods:** GET, HEAD, POST, PUT, PATCH, DELETE and OPTIONS; GET, HEAD, DELETE and OPTIONS take no body. PATCH needs Java 11 or later: `HttpURLConnection` can't send it, so it goes through Java's `java.net.http` client under the same TLS, certificate, timeout, size and redirect rules. On Java 8 it fails with a clear error. It can't go through a proxy that asks for a login, and it's refused when a JVM-wide setting would break the rules: `jdk.httpclient.enableAllMethodRetry=true` (Java would resend it) or a SOCKS proxy (`java.net.http` would connect directly).
 - **Body:** a String goes as UTF-8 with `Content-Type: application/json; charset=UTF-8` unless you set a content type; bytes go as `application/octet-stream`.
 - **Headers:** any valid header except `Authorization` (pass your own token instead) and the ones the JDK sets itself (`Host`, `Content-Length`, `Connection`, ...).
-- **The token:** the library's, from the cache, for the request's scopes or else the `ClientInfo` defaults; or your own, sent as `Bearer` as is, never cached or renewed. A request can't carry both scopes and your own token.
+- **The token:** the library's, from the cache, for the request's scopes or else the `ClientInfo` defaults; or your own, sent as `Bearer` as is, never cached or renewed, and with nothing of the `ClientInfo` (no client certificate, so no allowed-host check either). A request can't carry both scopes and your own token.
 - **The answer:** every status comes back as a `ServiceResponse`: `getStatus()`, `getHeader(name)`, `getBody()` (text by the Content-Type charset) and `getBodyBytes()` (a PDF arrives intact). Up to 16 MB.
 - **Retries:** a call is resent when nothing was sent, or after a 429 or 503 with `Retry-After`; `retryOnFailure()` adds 5xx and other failures for idempotent calls. A POST is sent in a mode that stops Java itself from sending it twice; Java may resend a GET, PUT or DELETE once if the connection fails before the answer. Redirects aren't followed, so the token never goes to another host.
-- **401:** with the library's token, the token is renewed once (one token request, shared by every thread holding it) and the call sent once more; with your own token the 401 comes back.
+- **401:** with the library's token, the token is renewed once (one token request, shared by every thread holding it) and the call sent once more, if the token is at least 60 s old and the call has time left. A token just issued that's turned away isn't the problem (a permission error, a wrong audience), and renewing it every time would use up a vendor's token limit. With your own token the 401 comes back.
 - **Settings:** `OAuthServiceClient.builder()` sets the timeouts, the retries and the response size limit; `ServiceRequest.timeout(...)` sets one call's limit, for a large download. The timeouts also apply to the instance's token requests.
 - **Checked first:** the URL must be https before any token is fetched; a bad URL or token gives an `IllegalArgumentException` that doesn't repeat the value.
-- **Client certificate:** presented on service calls too whenever the `ClientInfo` has one, for certificate-bound tokens.
-- **Allowed hosts:** with `allowedHost(...)` set, a call to any other host is refused with an `IllegalArgumentException` before a token is fetched. It applies to every call that carries the `ClientInfo`'s token or client certificate.
+- **Client certificate:** presented on calls with the library's token whenever the `ClientInfo` has one, for certificate-bound tokens; never with your own token.
+- **Allowed hosts:** with `allowedHost(...)` set, a call with the library's token to any other host is refused with an `IllegalArgumentException` before a token is fetched. The list is part of what identifies a cached token, so a `ClientInfo` without it doesn't reuse the token.
 - **Lifetime:** `initialize` can be called again, for example after a secret rotation. Tokens are cached for the whole JVM (per class loader), so they outlive `close()` and instances with the same `ClientInfo` share them. One instance is thread-safe; after `close()` calls throw `IllegalStateException`.
 
 ## One token, step by step
@@ -138,7 +138,7 @@ Build one with `ClientInfo.forTenant(service, tenant)` or `ClientInfo.global(ser
 | `tokenParameter(name, value)` | optional | Extra form fields, e.g. `audience`. Names the library sets (`grant_type`, `scope`, `client_id`, …) are refused. |
 | `introspectionUrl` | planned | Stored and checked now; used once introspection is built. |
 | `attribute(name, value)` | optional | The caller's own data (an account ID, a base URL); never sent. |
-| `allowedHost(...)` | optional, recommended | Hosts that calls carrying this token or client certificate may go to: `api.example.com`, or `*.my.salesforce.com` for any host below that domain. Without any, every https host is allowed. |
+| `allowedHost(...)` | optional, recommended | Hosts that calls with this token may go to: `api.example.com`, or `*.my.salesforce.com` for any host below that domain (not over an IP address). Without any, every https host is allowed. Keep wildcards narrow: `*.co.uk` or `*.azurewebsites.net` would let anyone with a site there receive the token. |
 
 Settings that don't fit the grant are refused rather than ignored: a `subject` with client credentials, a refresh token without one, a `refreshToken` outside the refresh grant, a secret and a signing key both used to authenticate the client, an expired certificate.
 
@@ -256,22 +256,22 @@ Token requests are resent only when the server certainly didn't process them, be
 | TLS handshake failed | Not resent: it would fail the same way |
 | An OAuth error (400, 401) | Not resent: reported with its `error` (a 401 as `invalid_client`) |
 
-A service call follows the same idea: by default it is resent only when the service certainly didn't carry it out. `ServiceRequest.retryOnFailure()` adds 5xx, a busy answer without `Retry-After` and failures after sending, for idempotent calls (a POST may then be carried out twice). A pause that doesn't fit in what is left of the call's timeout ends the retries, and the answer comes back.
+A service call follows the same idea: by default it is resent only when the service certainly didn't carry it out. `ServiceRequest.retryOnFailure()` adds 5xx, a busy answer without `Retry-After` and connection failures after sending, for idempotent calls (a POST may then be carried out twice); never a read timeout, since the service may still be working on the call. When `Retry-After` asks for more than 30 s, can't be read, or the pause doesn't fit in what is left of the call's timeout, the answer comes back instead.
 
 | What happened | Service call | With `retryOnFailure()` |
 |---|---|---|
 | Connection refused, host not found, connect timeout | Resent, after 500 ms, then 1 s | Resent |
-| 429 or 503 with `Retry-After` (seconds or a date) | Resent after that pause (at most 30 s) | Resent after that pause |
+| 429 or 503 with `Retry-After` (seconds or a date) of at most 30 s | Resent after that pause | Resent after that pause |
 | 429 or 503 without `Retry-After` | Returned | Resent, after 500 ms, then 1 s |
 | 500, 502, 504 | Returned | Resent |
-| Read timeout, connection lost after sending | Reported | Resent |
+| Connection lost after sending | Reported | Resent |
 | 401 with the library's token | Token renewed once, call sent once more | The same |
 | 401 with your own token | Returned | Returned |
 
 | Limit | Value |
 |---|---|
 | Connect timeout / read timeout | 10 s / 30 s (`connectTimeout`, `readTimeout`) |
-| Whole call: attempts, pauses, the resend after a 401 | 60 s (`callTimeout`, or `ServiceRequest.timeout`) |
+| Whole call: attempts, pauses, the resend after a 401 | 60 s (`callTimeout`, or `ServiceRequest.timeout`); a token request has its own limit of the same length |
 | Retries | Token requests 2; service calls 2 by default (`retries`, 0 to 10) |
 | Token response size | 1 MB read, 256 KB used |
 | Service response size | 16 MB (`maxResponseBytes`) |
@@ -283,7 +283,7 @@ Every token request, and every POST to a service, is also sent in a mode that st
 
 | Exception | When | Carries |
 |---|---|---|
-| `IllegalArgumentException` | `ClientInfo.build()` finds problems; a blank scope or one with spaces; a `ServiceRequest` with a non-https URL, a refused header, a body on GET, PATCH on Java 8, or a bad token | Every problem in one message, naming service and tenant; never a URL, header value or token |
+| `IllegalArgumentException` | `ClientInfo.build()` finds problems; a blank scope or one with spaces; a `ServiceRequest` with a non-https URL, a refused header, a body on GET, PATCH on Java 8, or a bad token | Every problem in one message, naming service and tenant; never a URL's path or query, a header value or a token (host names may appear) |
 | `IllegalStateException` | A call needs the library's token but `initialize` wasn't called; any call after `close()` | |
 | `OAuthServiceException` | No usable token: the server answered with an error, the answer isn't a token, the connection, TLS or deadline failed, the thread was interrupted. Or a service call got no answer: connection, TLS, timeout, a response over 16 MB | `getError()`, `getErrorDescription()`, `getErrorUri()`, `getHttpStatus()` (-1 without an answer); the message starts "Token request for service/tenant failed" or "Request failed: METHOD url" (query hidden) |
 
@@ -370,12 +370,13 @@ ClientInfo.global("bank")
 
 - **Who shares a token:** tokens are cached per service, tenant, user and scopes. A client credentials token serves the whole tenant (server to server). With the JWT bearer grant the user is the `subject`; with a refresh token the `subject` names the user the refresh token belongs to and is required, so one user never gets another user's token.
 - **Trusted configuration:** build `ClientInfo` from your own configuration, not from tenant input: a tenant that could set the token URL and audience could collect an assertion signed with your key. Anything in the same class loader that builds a `ClientInfo` with the same service, tenant, user, token URL and client ID gets the cached token, so don't share the jar between applications that don't trust each other (a server's shared `lib/` folder).
-- **TLS:** the library uses its own TLS context with the JVM's trust store (`cacerts`, or `javax.net.ssl.trustStore`), checks host names itself and presents no client certificate unless the `ClientInfo` has one. Settings other code makes JVM-wide (a socket factory or host name verifier that accepts anything, `javax.net.ssl.keyStore`) don't apply.
+- **TLS:** the library uses its own TLS context with the JVM's trust store (`cacerts`, or `javax.net.ssl.trustStore`), checks host names itself and presents no client certificate unless the `ClientInfo` has one. Settings other code makes JVM-wide (a socket factory or host name verifier that accepts anything, `javax.net.ssl.keyStore`, `jdk.internal.httpclient.disableHostnameVerification` for PATCH) don't apply.
 - **Deadlines:** at the call deadline the request's sockets are closed, so a server that stalls the connection or the TLS handshake can't hold a thread or a host slot.
-- **At most once:** every token request and every POST to a service is sent in a mode that stops Java from resending it; a 401 answer's body can't be read in that mode, so a token endpoint's 401 is reported as `invalid_client`. Java may resend a GET, PUT or DELETE once when a connection fails before the answer.
+- **At most once:** every token request and every POST to a service is sent in a mode that stops Java from resending it; a 401 answer's body can't be read in that mode, so a token endpoint's 401 is reported as `invalid_client`. A PATCH isn't resent by Java either (and is refused if a JVM-wide setting would change that). Java may resend a GET, PUT or DELETE once when a connection fails before the answer.
 - **Java's Authenticator:** on Java 9 and later the JVM's default `java.net.Authenticator` is asked only for proxy logins, never for a service's 401 login challenge. On Java 8 that holds for POSTs only: an application on Java 8 with a default Authenticator should make it check `getRequestorType()`.
 - **Messages and logs:** never a secret, token or assertion; credentials a server echoes back in an error are replaced by `****`; URLs are shown without user info or query.
-- **Allowed hosts:** set `allowedHost(...)` on each `ClientInfo` whenever a URL can come from a response (Salesforce's `instance_url`, a Graph next link, DocuSign's `base_uri`): a call to any other host is then refused before the token is fetched. Without it, every https host is allowed.
+- **Allowed hosts:** set `allowedHost(...)` on each `ClientInfo` whenever a URL can come from a response (Salesforce's `instance_url`, a Graph next link, DocuSign's `base_uri`): a call to any other host is then refused before the token is fetched. Without it, every https host is allowed. Keep wildcards narrow: a public suffix or a shared hosting domain lets everyone there receive the token.
+- **Cookies:** don't install a JVM-wide `CookieHandler` (`CookieHandler.setDefault`) in an application that uses this library for several tenants: `HttpURLConnection` would share cookies across all calls, so cookies from one tenant's calls could go out with another's. The library can't turn that off, and logs a warning once when it finds one.
 
 ## Testing
 

@@ -514,9 +514,37 @@ final class UrlConnectionTransport implements HttpTransport {
             java.lang.reflect.Constructor<?> c = Class.forName(PATCH_TRANSPORT)
                     .getDeclaredConstructor(long.class, long.class, TrustManager[].class);
             return (HttpTransport) c.newInstance((long) connectTimeoutMs, requestTimeoutMs, trustManagers);
+        } catch (java.lang.reflect.InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException) {
+                throw (RuntimeException) cause; // e.g. TLS couldn't be set up: OAuthServiceException
+            }
+            throw new IOException("Cannot set up the PATCH transport: " + cause, cause);
         } catch (ReflectiveOperationException | LinkageError e) {
             throw new RequestNotSentException("PATCH needs Java 11 or later (it is sent with java.net.http): " + e, e);
         }
+    }
+
+    private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(UrlConnectionTransport.class.getName());
+    private static final AtomicBoolean COOKIE_WARNING = new AtomicBoolean();
+
+    /**
+     * Warns once when the application installed a JVM-wide {@link java.net.CookieHandler}: HttpURLConnection
+     * then stores and sends cookies for every call in the JVM, so cookies from one tenant's calls can go out
+     * with another's to the same host. There's no way to turn that off per connection.
+     */
+    private static void warnAboutJvmCookies() {
+        if (java.net.CookieHandler.getDefault() != null && COOKIE_WARNING.compareAndSet(false, true)) {
+            LOG.warning("A JVM-wide CookieHandler is installed (CookieHandler.setDefault): HttpURLConnection shares its "
+                    + "cookies across all calls, so cookies from one tenant's service can go out with another tenant's "
+                    + "calls to the same host. oauth-service-client can't turn this off; remove the CookieHandler if "
+                    + "tenants share service hosts.");
+        }
+    }
+
+    /** For tests: lets the cookie warning show again. */
+    static void resetCookieWarning() {
+        COOKIE_WARNING.set(false);
     }
 
     /** The TLS socket factory presenting {@code certificate}, made once per key and kept. */
@@ -541,6 +569,7 @@ final class UrlConnectionTransport implements HttpTransport {
     }
 
     private HttpResponse send(HttpURLConnection conn, URL url, HttpRequest request, Call call) throws IOException {
+        warnAboutJvmCookies();
         if (conn instanceof HttpsURLConnection) {
             HttpsURLConnection https = (HttpsURLConnection) conn;
             // a new factory per client certificate: the JDK reuses a kept-alive connection only with the

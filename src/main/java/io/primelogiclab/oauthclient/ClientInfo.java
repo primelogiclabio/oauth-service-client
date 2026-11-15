@@ -257,13 +257,16 @@ public final class ClientInfo {
      * and a trailing dot is ignored.
      */
     public boolean allowsHost(String host) {
-        if (allowedHosts.isEmpty()) {
-            return true;
-        }
         if (host == null) {
             return false;
         }
         String h = normalizeHost(host);
+        if (h.indexOf('*') >= 0 || hostProblem(h) != null) {
+            return false; // not a host name, e.g. "evil.com/.example.com"
+        }
+        if (allowedHosts.isEmpty()) {
+            return true;
+        }
         for (String allowed : allowedHosts) {
             if (allowed.startsWith("*.")) {
                 String suffix = allowed.substring(1); // ".example.com"
@@ -277,6 +280,39 @@ public final class ClientInfo {
         return false;
     }
 
+    /**
+     * Why {@code h} (lowercase, no trailing dot) can't be a host, or an allowed-host entry with a leading
+     * {@code *.}; {@code null} if it can.
+     */
+    static String hostProblem(String h) {
+        if (h.startsWith("[") && h.endsWith("]")) {
+            return h.length() > 2 && h.substring(1, h.length() - 1).matches("[0-9a-f:.]+")
+                    ? null : "is not a valid IPv6 address";
+        }
+        if (h.contains("://") || h.contains("/") || h.contains("@") || h.contains(":")) {
+            return "must be a host name only: no scheme, path, user info or port";
+        }
+        String name = h;
+        if (h.contains("*")) {
+            if (!h.startsWith("*.") || h.indexOf('*', 1) >= 0) {
+                return "may only use * as its first label, as in *.example.com";
+            }
+            name = h.substring(2);
+            if (name.indexOf('.') < 0) {
+                return "is too broad: a wildcard needs a domain of at least two labels, as in *.example.com";
+            }
+            if (name.substring(name.lastIndexOf('.') + 1).matches("[0-9]+")) {
+                return "can't be a wildcard over an IP address";
+            }
+        }
+        for (String label : name.split("\\.", -1)) {
+            if (!label.matches("[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")) {
+                return "is not a valid host name";
+            }
+        }
+        return null;
+    }
+
     private static String normalizeHost(String host) {
         String h = host.trim().toLowerCase(Locale.ROOT);
         return h.endsWith(".") ? h.substring(0, h.length() - 1) : h;
@@ -288,7 +324,8 @@ public final class ClientInfo {
      * the client certificate is in, since a token may be bound to it (RFC 8705).
      */
     List<Object> tokenSettings() {
-        return Collections.unmodifiableList(Arrays.<Object>asList(tokenUrl, grant, clientId, subject,
+        // allowedHosts too: a client info without the list mustn't reuse a token another keeps to some hosts
+        return Collections.unmodifiableList(Arrays.<Object>asList(allowedHosts, tokenUrl, grant, clientId, subject,
                 assertionAudience, assertionClaims, scopes, tokenParameters,
                 clientCertificate == null ? null : clientCertificate.getCertificateChain().get(0)));
     }
@@ -633,7 +670,9 @@ public final class ClientInfo {
         /** Lowercase hosts without duplicates, in the order given; a malformed one goes to {@code problems}. */
         private static List<String> checkAllowedHosts(List<String> hosts, List<String> problems) {
             Set<String> out = new LinkedHashSet<String>();
+            int n = 0;
             for (String raw : hosts) {
+                n++;
                 if (Strings.isBlank(raw)) {
                     problems.add("allowedHost must not be blank");
                     continue;
@@ -641,7 +680,7 @@ public final class ClientInfo {
                 String h = normalizeHost(raw);
                 String problem = hostProblem(h);
                 if (problem != null) {
-                    problems.add("allowedHost '" + Strings.safe(raw.trim()) + "' " + problem);
+                    problems.add("allowedHost " + describeEntry(raw.trim(), n) + " " + problem);
                 } else {
                     out.add(h);
                 }
@@ -649,31 +688,12 @@ public final class ClientInfo {
             return Collections.unmodifiableList(new ArrayList<String>(out));
         }
 
-        /** Why {@code h} (lowercase, no trailing dot) can't be an allowed host, or {@code null}. */
-        private static String hostProblem(String h) {
-            if (h.startsWith("[") && h.endsWith("]")) {
-                return h.length() > 2 && h.substring(1, h.length() - 1).matches("[0-9a-f:.]+")
-                        ? null : "is not a valid IPv6 address";
-            }
-            if (h.contains("://") || h.contains("/") || h.contains("@") || h.contains(":")) {
-                return "must be a host name only: no scheme, path, user info or port";
-            }
-            String name = h;
-            if (h.contains("*")) {
-                if (!h.startsWith("*.") || h.indexOf('*', 1) >= 0) {
-                    return "may only use * as its first label, as in *.example.com";
-                }
-                name = h.substring(2);
-                if (name.indexOf('.') < 0) {
-                    return "is too broad: a wildcard needs a domain of at least two labels, as in *.example.com";
-                }
-            }
-            for (String label : name.split("\\.", -1)) {
-                if (!label.matches("[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")) {
-                    return "is not a valid host name";
-                }
-            }
-            return null;
+        /**
+         * The entry for a message: shown when it looks like a host, else only its position, since a pasted URL
+         * may carry user info or a key in its query.
+         */
+        private static String describeEntry(String raw, int position) {
+            return raw.matches("[A-Za-z0-9.*\\[\\]: -]{1,253}") ? "'" + raw + "'" : "#" + position + " (not shown)";
         }
 
         private void checkGrant(List<String> problems) {

@@ -9,7 +9,7 @@ Java library for backend services that call OAuth-protected external APIs (DocuS
 ```java
 try (OAuthServiceClient service = new OAuthServiceClient()) {
     service.initialize(clientInfo);                         // client info for one service and tenant (or global)
-    ServiceResponse created = service.post(url, json);      // also get(url), put(url, json), delete(url); url is a full https URL
+    ServiceResponse created = service.post(url, json);      // also get, put, patch, delete; url is a full https URL
     ServiceResponse mine = service.get(myToken, url);       // a token you already have
     ServiceResponse custom = service.request(ServiceRequest.put(url, json)
             .header("Accept", "application/json")
@@ -74,12 +74,13 @@ try (OAuthServiceClient service = new OAuthServiceClient()) {
     String api = service.token().getField("instance_url") + "/services/data/" + apiVersion;   // e.g. v62.0
     ServiceResponse accounts = service.get(api + "/query?q=" + URLEncoder.encode("SELECT Id, Name FROM Account", "UTF-8"));
     ServiceResponse created = service.post(api + "/sobjects/Account", "{\"Name\":\"Acme\"}");
+    ServiceResponse updated = service.patch(api + "/sobjects/Account/" + accountId, "{\"Phone\":\"555-0100\"}");
 }
 ```
 
 - Salesforce sends no `expires_in`, so the token is kept until Salesforce answers 401; the library then renews it and sends the call again.
 - No scopes go in the request: they come from the app's policies.
-- Record updates use PATCH, which arrives before 1.0.0.
+- Record updates use PATCH, which needs Java 11 or later (see Requirements).
 
 ### Answers and errors
 
@@ -92,7 +93,7 @@ Every answer comes back as a `ServiceResponse`, whatever its status: check `getS
 
 ## Requirements
 
-Java 8 or later (built and tested on Java 8 and 21).
+Java 8 or later (built and tested on Java 8 and 21). PATCH needs Java 11 or later: it is sent with Java's `java.net.http` client, since `HttpURLConnection` can't send it; on Java 8 it fails with a clear error. Build releases on JDK 11 or later so the jar includes the PATCH support.
 
 ## Build
 

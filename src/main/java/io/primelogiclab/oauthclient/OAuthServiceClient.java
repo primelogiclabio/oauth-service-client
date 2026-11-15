@@ -146,6 +146,16 @@ public final class OAuthServiceClient implements AutoCloseable {
         return request(ServiceRequest.put(url, payload).token(token));
     }
 
+    /** PATCH of {@code payload} (JSON; {@code null} for an empty body) with the library's token; Java 11 or later. */
+    public ServiceResponse patch(String url, String payload) {
+        return request(ServiceRequest.patch(url, payload));
+    }
+
+    /** PATCH of {@code payload} (JSON; {@code null} for an empty body) with the caller's own token; Java 11 or later. */
+    public ServiceResponse patch(String token, String url, String payload) {
+        return request(ServiceRequest.patch(url, payload).token(token));
+    }
+
     /** DELETE with the library's token. */
     public ServiceResponse delete(String url) {
         return request(ServiceRequest.delete(url));
@@ -219,7 +229,7 @@ public final class OAuthServiceClient implements AutoCloseable {
         Map<String, String> headers = new LinkedHashMap<String, String>(request.headersToSend());
         headers.put("Authorization", authorization);
         byte[] body = request.getBody();
-        boolean post = "POST".equals(request.getMethod());
+        boolean post = "POST".equals(request.getMethod()) || "PATCH".equals(request.getMethod()); // not idempotent
         if (body == null && (post || "PUT".equals(request.getMethod()))) {
             // an empty body sends Content-Length: 0, which some servers require; a POST's is sent
             // fixed-length below, so the JDK can't resend it either

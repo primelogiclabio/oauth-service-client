@@ -287,6 +287,9 @@ final class UrlConnectionTransport implements HttpTransport {
 
     @Override
     public HttpResponse execute(final HttpRequest request) throws IOException {
+        if ("PATCH".equals(request.getMethod())) {
+            return patchTransport().execute(request); // HttpURLConnection refuses PATCH
+        }
         long limitMs = requestTimeoutMs;
         if (request.getTimeout() != null) { // what is left of the caller's overall deadline
             long left = Math.max(1, request.getTimeout().toMillis());
@@ -403,14 +406,14 @@ final class UrlConnectionTransport implements HttpTransport {
     }
 
     /** host:port of a URL, the unit that {@link #MAX_PER_HOST} counts. */
-    private static String hostKey(String url) throws IOException {
+    static String hostKey(String url) throws IOException {
         URL u = new URL(url);
         int port = u.getPort() < 0 ? u.getDefaultPort() : u.getPort();
         return u.getHost().toLowerCase(java.util.Locale.ROOT) + ":" + port;
     }
 
     /** Takes a slot for {@code host}, waiting for a free one until the deadline. */
-    private static void acquire(String host, long deadlineNanos, long timeoutMs) throws IOException {
+    static void acquire(String host, long deadlineNanos, long timeoutMs) throws IOException {
         synchronized (IN_FLIGHT) {
             while (true) {
                 int[] count = IN_FLIGHT.get(host); // looked up again after every wait: it may have been removed
@@ -438,7 +441,7 @@ final class UrlConnectionTransport implements HttpTransport {
         }
     }
 
-    private static void release(String host) {
+    static void release(String host) {
         synchronized (IN_FLIGHT) {
             int[] count = IN_FLIGHT.get(host);
             if (count != null && --count[0] <= 0) {
@@ -466,6 +469,54 @@ final class UrlConnectionTransport implements HttpTransport {
     /** Worker threads running a request right now; for tests. */
     static int busyWorkers() {
         return Workers.EXECUTOR.getActiveCount();
+    }
+
+    /** The class that sends PATCH through java.net.http; compiled on JDK 11+ only (src/main/java11). */
+    static final String PATCH_TRANSPORT = "io.primelogiclab.oauthclient.Java11PatchTransport";
+    private static final boolean PATCH_SUPPORTED = patchClassAvailable();
+    private volatile HttpTransport patch;
+
+    /** True when this runtime and build can send PATCH: Java 11 or later, and a jar built on JDK 11+. */
+    static boolean patchSupported() {
+        return PATCH_SUPPORTED;
+    }
+
+    private static boolean patchClassAvailable() {
+        try {
+            Class.forName("java.net.http.HttpClient"); // first: on Java 8 the version-55 class is never touched
+            Class.forName(PATCH_TRANSPORT, false, UrlConnectionTransport.class.getClassLoader());
+            return true;
+        } catch (ClassNotFoundException | LinkageError | RuntimeException e) {
+            return false;
+        }
+    }
+
+    /** The PATCH transport, made on first use with this transport's timeouts and trust. */
+    HttpTransport patchTransport() throws IOException {
+        HttpTransport t = patch;
+        if (t == null) {
+            synchronized (this) {
+                t = patch;
+                if (t == null) {
+                    t = newPatchTransport();
+                    patch = t;
+                }
+            }
+        }
+        return t;
+    }
+
+    private HttpTransport newPatchTransport() throws IOException {
+        if (!PATCH_SUPPORTED) {
+            throw new RequestNotSentException("PATCH needs Java 11 or later (it is sent with java.net.http)", null);
+        }
+        try {
+            java.lang.reflect.Constructor<?> c = Class.forName(PATCH_TRANSPORT)
+                    .getDeclaredConstructor(long.class, long.class, TrustManager[].class);
+            return (HttpTransport) c.newInstance((long) connectTimeoutMs, requestTimeoutMs, trustManagers);
+        } catch (ReflectiveOperationException | LinkageError e) {
+            throw new RequestNotSentException("PATCH needs Java 11 or later (it is sent with java.net.http): " + e, e);
+        }
     }
 
     /** The TLS socket factory presenting {@code certificate}, made once per key and kept. */

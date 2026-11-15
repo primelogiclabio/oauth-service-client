@@ -115,5 +115,39 @@
                 <maven.compiler.release>8</maven.compiler.release>
             </properties>
         </profile>
+        <!--
+            On JDK 11+ also compile src/main/java11 (the PATCH transport on java.net.http) with release 11,
+            into the same classes. The class is only loaded by name on a Java 11+ runtime, so the jar still runs
+            on Java 8; built on JDK 8, PATCH reports that it needs Java 11. Releases are built on JDK 11+.
+        -->
+        <profile>
+            <id>java11-patch</id>
+            <activation>
+                <jdk>[11,)</jdk>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-compiler-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>compile-java11</id>
+                                <phase>compile</phase>
+                                <goals>
+                                    <goal>compile</goal>
+                                </goals>
+                                <configuration>
+                                    <release>11</release>
+                                    <compileSourceRoots>
+                                        <compileSourceRoot>${project.basedir}/src/main/java11</compileSourceRoot>
+                                    </compileSourceRoots>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
     </profiles>
 </project>

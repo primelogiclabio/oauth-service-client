@@ -25,6 +25,16 @@ final class Tls {
      * @throws OAuthServiceException if the JDK can't set up TLS with this key; nothing is sent
      */
     static SSLSocketFactory socketFactory(ClientKey clientCertificate, TrustManager[] trustManagers) {
+        return context(clientCertificate, trustManagers).getSocketFactory();
+    }
+
+    /**
+     * The TLS context presenting {@code clientCertificate} (or none) and trusting {@code trustManagers} (or
+     * the JVM's trust store); never the JVM-wide default context.
+     *
+     * @throws OAuthServiceException if the JDK can't set up TLS with this key; nothing is sent
+     */
+    static SSLContext context(ClientKey clientCertificate, TrustManager[] trustManagers) {
         try {
             KeyManager[] keyManagers = null;
             if (clientCertificate != null) {
@@ -40,7 +50,7 @@ final class Tls {
             }
             SSLContext context = SSLContext.getInstance("TLS");
             context.init(keyManagers, trustManagers, null);
-            return context.getSocketFactory();
+            return context;
         } catch (GeneralSecurityException | IOException e) {
             throw new OAuthServiceException("Cannot set up TLS" + (clientCertificate == null ? "" : " with " + clientCertificate)
                     + ": " + Strings.safe(e.getMessage()), e);

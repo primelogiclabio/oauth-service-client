@@ -195,9 +195,9 @@ main [id]{scroll-margin-top:64px}
             <tr><td>Token cache</td><td><span class="pill ok">Done</span></td><td>Per (service, tenant, user, scope set), on Caffeine 2.9.3.</td></tr>
             <tr><td>Scopes passed by the app</td><td><span class="pill ok">Done</span></td><td>Replace the <code>ClientInfo</code> defaults for that token.</td></tr>
             <tr><td><code>OAuthServiceException</code></td><td><span class="pill ok">Done</span></td><td>Public.</td></tr>
-            <tr><td><code>OAuthServiceClient</code>, <code>ServiceRequest</code>, <code>ServiceResponse</code></td><td><span class="pill ok">Done</span></td><td>Public. <code>get</code>, <code>post</code>, <code>put</code>, <code>delete</code>, <code>request(ServiceRequest)</code> and <code>token()</code>; each call is sent once.</td></tr>
+            <tr><td><code>OAuthServiceClient</code>, <code>ServiceRequest</code>, <code>ServiceResponse</code></td><td><span class="pill ok">Done</span></td><td>Public. <code>get</code>, <code>post</code>, <code>put</code>, <code>patch</code>, <code>delete</code>, <code>request(ServiceRequest)</code> and <code>token()</code>; each call is sent once.</td></tr>
             <tr><td>Outbound requests</td><td><span class="pill ok">Done</span></td><td>Renew once after a 401, retries (<code>Retry-After</code> in seconds or as a date), <code>retryOnFailure()</code>, <code>builder()</code> settings and a per-call timeout; the mutual TLS socket factory kept per key.</td></tr>
-            <tr><td>PATCH</td><td><span class="pill todo">Planned</span></td><td><code>HttpURLConnection</code> can't send it; Salesforce updates use it.</td></tr>
+            <tr><td>PATCH</td><td><span class="pill ok">Done</span></td><td>Java 11 and later, through <code>java.net.http</code> under the same rules; a clear error on Java 8.</td></tr>
             <tr><td>Introspection (RFC 7662)</td><td><span class="pill todo">Planned</span></td><td>For tokens that carry no expiry (Salesforce). <code>introspectionUrl</code> can already be set but isn't used yet.</td></tr>
             <tr><td>Metadata discovery (RFC 8414)</td><td><span class="pill todo">Planned</span></td><td>An issuer instead of an explicit token URL.</td></tr>
             <tr><td>Refresh-token rotation write-back, cool-down after failures, vendor clients</td><td><span class="pill todo">Planned</span></td><td>See <a href="../PROGRESS.md">PROGRESS.md</a>.</td></tr>
@@ -293,7 +293,7 @@ main [id]{scroll-margin-top:64px}
         .maxResponseBytes(16 * 1024 * 1024)
         .build();</code></pre>
         <ul>
-          <li><strong>Methods:</strong> GET, HEAD, POST, PUT, DELETE and OPTIONS. PATCH isn't supported yet (<code>HttpURLConnection</code> can't send it). GET, HEAD, DELETE and OPTIONS take no body.</li>
+          <li><strong>Methods:</strong> GET, HEAD, POST, PUT, PATCH, DELETE and OPTIONS; GET, HEAD, DELETE and OPTIONS take no body. PATCH needs Java 11 or later: <code>HttpURLConnection</code> can't send it, so it goes through Java's <code>java.net.http</code> client under the same TLS, certificate, timeout, size and redirect rules. On Java 8 it fails with a clear error, and it can't go through a proxy that asks for a login.</li>
           <li><strong>Body:</strong> a String goes as UTF-8 with <code>Content-Type: application/json; charset=UTF-8</code> unless you set a content type; bytes go as <code>application/octet-stream</code>.</li>
           <li><strong>Headers:</strong> any valid header except <code>Authorization</code> (pass your own token instead) and the ones the JDK sets itself (<code>Host</code>, <code>Content-Length</code>, <code>Connection</code>, ...).</li>
           <li><strong>The token:</strong> the library's, from the cache, for the request's scopes or else the <code>ClientInfo</code> defaults; or your own, sent as <code>Bearer</code> as is, never cached or renewed. A request can't carry both scopes and your own token.</li>
@@ -531,7 +531,7 @@ AccessToken token = service.token("https://graph.microsoft.com/.default");   // 
         <div class="table-wrap"><table>
           <thead><tr><th>Exception</th><th>When</th><th>Carries</th></tr></thead>
           <tbody>
-            <tr><td><code>IllegalArgumentException</code></td><td><code>ClientInfo.build()</code> finds problems; a blank scope or one with spaces; a <code>ServiceRequest</code> with a non-https URL, a refused header, a body on GET, PATCH, or a bad token</td><td>Every problem in one message, naming service and tenant; never a URL, header value or token</td></tr>
+            <tr><td><code>IllegalArgumentException</code></td><td><code>ClientInfo.build()</code> finds problems; a blank scope or one with spaces; a <code>ServiceRequest</code> with a non-https URL, a refused header, a body on GET, PATCH on Java 8, or a bad token</td><td>Every problem in one message, naming service and tenant; never a URL, header value or token</td></tr>
             <tr><td><code>IllegalStateException</code></td><td>A call needs the library's token but <code>initialize</code> wasn't called; any call after <code>close()</code></td><td></td></tr>
             <tr><td><code>OAuthServiceException</code></td><td>No usable token: the server answered with an error, the answer isn't a token, the connection, TLS or deadline failed, the thread was interrupted. Or a service call got no answer: connection, TLS, timeout, a response over 16 MB</td><td><code>getError()</code>, <code>getErrorDescription()</code>, <code>getErrorUri()</code>, <code>getHttpStatus()</code> (-1 without an answer); the message starts "Token request for service/tenant failed" or "Request failed: METHOD url" (query hidden)</td></tr>
           </tbody>
@@ -643,7 +643,7 @@ ClientInfo.global("bank")
       <section aria-labelledby="limits">
         <h2 id="limits">Planned and out of scope</h2>
         <ul>
-          <li><strong>Next:</strong> allowed hosts per <code>ClientInfo</code>, the README examples, PATCH support and a security review of the new code, then release 1.0.0 on Maven Central.</li>
+          <li><strong>Next:</strong> a security review of the new code and signing, then release 1.0.0 on Maven Central.</li>
           <li><strong>After the basics:</strong> refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body), a short cool-down after failed token requests, introspection, metadata discovery, and vendor clients on top of the core.</li>
           <li><strong>Unverified:</strong> whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.</li>
           <li><strong>Out of scope:</strong> sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.</li>

@@ -1,5 +1,6 @@
 package io.primelogiclab.oauthclient;
 
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -573,6 +574,78 @@ class OAuthServiceClientTest {
         // nothing of the client info is sent with the caller's own token here, so the list doesn't apply
         assertEquals(200, withoutCertificate.get(OWN_TOKEN, plain.url("/items")).getStatus());
         assertEquals(0, fetcher.count.get());
+    }
+
+    // ------------------------------------------------------------------ PATCH (Java 11 and later)
+
+    @Test
+    void patchSendsTheMethodBodyAndToken() throws Exception {
+        assumeTrue(UrlConnectionTransport.patchSupported(), "PATCH needs Java 11");
+        StubServer server = server(false);
+        server.enqueue("/items/1", StubServer.json(401, "{}"));
+        server.enqueue("/items/1", StubServer.json(204, ""));
+
+        ServiceResponse response = client(info()).patch(server.url("/items/1"), JSON);
+
+        assertEquals(204, response.getStatus());
+        List<StubServer.Recorded> r = server.requests();
+        assertEquals(2, r.size(), "renewed after the 401 and sent again");
+        for (StubServer.Recorded each : r) {
+            assertEquals("PATCH", each.method);
+            assertEquals(JSON, each.body);
+            assertEquals("application/json; charset=UTF-8", each.header("Content-Type"));
+        }
+        assertEquals("Bearer tok-1", r.get(0).header("Authorization"));
+        assertEquals("Bearer tok-2", r.get(1).header("Authorization"));
+    }
+
+    @Test
+    void patchPresentsTheClientCertificateAndFollowsNoRedirect() throws Exception {
+        assumeTrue(UrlConnectionTransport.patchSupported(), "PATCH needs Java 11");
+        StubServer server = server(true);
+        server.always("/items/1", new StubServer.Response(302, "text/plain", "").header("Location", server.url("/elsewhere")));
+        ClientKey certificate = Fixtures.clientWithChain();
+        OAuthServiceClient service = client(ClientInfo.forTenant("svc", "acme").tokenUrl("https://login.example.com/token")
+                .clientId("id").clientCertificate(certificate).build());
+
+        ServiceResponse response = service.patch(server.url("/items/1"), JSON);
+
+        assertEquals(302, response.getStatus());
+        assertEquals(1, server.requests().size());
+        assertEquals(certificate.getCertificateChain().get(0).getSubjectX500Principal(),
+                server.last().clientCertificate.getSubjectX500Principal());
+    }
+
+    @Test
+    void aPatchEndsAtItsTimeoutAndAtTheSizeLimit() throws Exception {
+        assumeTrue(UrlConnectionTransport.patchSupported(), "PATCH needs Java 11");
+        StubServer server = server(false);
+        server.always("/slow", StubServer.json(200, "{}").delay(3000));
+        server.always("/big", new StubServer.Response(200, "application/octet-stream", new byte[2048]));
+
+        long start = System.nanoTime();
+        assertThrows(OAuthServiceException.class, () -> client(info())
+                .request(ServiceRequest.patch(server.url("/slow"), JSON).timeout(Duration.ofSeconds(1))));
+        assertTrue(System.nanoTime() - start < Duration.ofMillis(2500).toNanos(), "the PATCH ran past its timeout");
+
+        OAuthServiceClient small = new OAuthServiceClient(cache, fetcher, executor(), 1024);
+        small.initialize(info());
+        OAuthServiceException e = assertThrows(OAuthServiceException.class, () -> small.patch(server.url("/big"), JSON));
+        assertTrue(e.getMessage().contains("exceeds 1024 bytes"), e.getMessage());
+    }
+
+    @Test
+    void aPatchWhoseConnectionIsRefusedIsRetriedThenReported() throws Exception {
+        assumeTrue(UrlConnectionTransport.patchSupported(), "PATCH needs Java 11");
+        int port;
+        try (ServerSocket s = new ServerSocket(0)) {
+            port = s.getLocalPort();
+        }
+        OAuthServiceClient service = retryingClient();
+
+        assertThrows(OAuthServiceException.class, () -> service.patch("https://localhost:" + port + "/items/1", JSON));
+
+        assertEquals(Arrays.asList(500L, 1000L), sleeps);
     }
 
     // ------------------------------------------------------------------ helpers

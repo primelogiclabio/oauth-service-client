@@ -28,9 +28,9 @@ The core is generic: it implements the standards (RFC 6749, 7523, 8705) and hand
 | Token cache | Done | Per (service, tenant, user, scope set), on Caffeine 2.9.3. |
 | Scopes passed by the app | Done | Replace the `ClientInfo` defaults for that token. |
 | `OAuthServiceException` | Done | Public. |
-| `OAuthServiceClient`, `ServiceRequest`, `ServiceResponse` | Done | Public. `get`, `post`, `put`, `delete`, `request(ServiceRequest)` and `token()`; each call is sent once. |
+| `OAuthServiceClient`, `ServiceRequest`, `ServiceResponse` | Done | Public. `get`, `post`, `put`, `patch`, `delete`, `request(ServiceRequest)` and `token()`; each call is sent once. |
 | Outbound requests | Done | Renew once after a 401, retries (`Retry-After` in seconds or as a date), `retryOnFailure()`, `builder()` settings and a per-call timeout; the mutual TLS socket factory kept per key. |
-| PATCH | Planned | `HttpURLConnection` can't send it; Salesforce updates use it. |
+| PATCH | Done | Java 11 and later, through `java.net.http` under the same rules; a clear error on Java 8. |
 | Introspection (RFC 7662) | Planned | For tokens that carry no expiry (Salesforce). `introspectionUrl` can already be set but isn't used yet. |
 | Metadata discovery (RFC 8414) | Planned | An issuer instead of an explicit token URL. |
 | Refresh-token rotation write-back, cool-down after failures, vendor clients | Planned | See [PROGRESS.md](../PROGRESS.md). |
@@ -94,7 +94,7 @@ OAuthServiceClient service = OAuthServiceClient.builder()
         .build();
 ```
 
-- **Methods:** GET, HEAD, POST, PUT, DELETE and OPTIONS. PATCH isn't supported yet (`HttpURLConnection` can't send it). GET, HEAD, DELETE and OPTIONS take no body.
+- **Methods:** GET, HEAD, POST, PUT, PATCH, DELETE and OPTIONS; GET, HEAD, DELETE and OPTIONS take no body. PATCH needs Java 11 or later: `HttpURLConnection` can't send it, so it goes through Java's `java.net.http` client under the same TLS, certificate, timeout, size and redirect rules. On Java 8 it fails with a clear error, and it can't go through a proxy that asks for a login.
 - **Body:** a String goes as UTF-8 with `Content-Type: application/json; charset=UTF-8` unless you set a content type; bytes go as `application/octet-stream`.
 - **Headers:** any valid header except `Authorization` (pass your own token instead) and the ones the JDK sets itself (`Host`, `Content-Length`, `Connection`, ...).
 - **The token:** the library's, from the cache, for the request's scopes or else the `ClientInfo` defaults; or your own, sent as `Bearer` as is, never cached or renewed. A request can't carry both scopes and your own token.
@@ -283,7 +283,7 @@ Every token request, and every POST to a service, is also sent in a mode that st
 
 | Exception | When | Carries |
 |---|---|---|
-| `IllegalArgumentException` | `ClientInfo.build()` finds problems; a blank scope or one with spaces; a `ServiceRequest` with a non-https URL, a refused header, a body on GET, PATCH, or a bad token | Every problem in one message, naming service and tenant; never a URL, header value or token |
+| `IllegalArgumentException` | `ClientInfo.build()` finds problems; a blank scope or one with spaces; a `ServiceRequest` with a non-https URL, a refused header, a body on GET, PATCH on Java 8, or a bad token | Every problem in one message, naming service and tenant; never a URL, header value or token |
 | `IllegalStateException` | A call needs the library's token but `initialize` wasn't called; any call after `close()` | |
 | `OAuthServiceException` | No usable token: the server answered with an error, the answer isn't a token, the connection, TLS or deadline failed, the thread was interrupted. Or a service call got no answer: connection, TLS, timeout, a response over 16 MB | `getError()`, `getErrorDescription()`, `getErrorUri()`, `getHttpStatus()` (-1 without an answer); the message starts "Token request for service/tenant failed" or "Request failed: METHOD url" (query hidden) |
 
@@ -388,7 +388,7 @@ ClientInfo.global("bank")
 
 ## Planned and out of scope
 
-- **Next:** allowed hosts per `ClientInfo`, the README examples, PATCH support and a security review of the new code, then release 1.0.0 on Maven Central.
+- **Next:** a security review of the new code and signing, then release 1.0.0 on Maven Central.
 - **After the basics:** refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body), a short cool-down after failed token requests, introspection, metadata discovery, and vendor clients on top of the core.
 - **Unverified:** whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.
 - **Out of scope:** sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.

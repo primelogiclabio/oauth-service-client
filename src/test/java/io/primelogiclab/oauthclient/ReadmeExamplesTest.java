@@ -64,6 +64,7 @@ class ReadmeExamplesTest {
             salesforce.enqueue("/services/data/v62.0/sobjects/Account", StubServer.json(401,
                     "[{\"errorCode\":\"INVALID_SESSION_ID\"}]"));
             salesforce.enqueue("/services/data/v62.0/sobjects/Account", StubServer.json(201, "{\"id\":\"001\",\"success\":true}"));
+            salesforce.enqueue("/services/data/v62.0/sobjects/Account/001", StubServer.json(204, ""));
 
             ClientInfo info = ClientInfo.global("salesforce")
                     .tokenUrl(salesforce.url("/services/oauth2/token"))          // the README: login.salesforce.com
@@ -82,6 +83,12 @@ class ReadmeExamplesTest {
                 ServiceResponse accounts = service.get(api + "/query?q="
                         + URLEncoder.encode("SELECT Id, Name FROM Account", "UTF-8"));
                 ServiceResponse created = service.post(api + "/sobjects/Account", "{\"Name\":\"Acme\"}");
+                if (UrlConnectionTransport.patchSupported()) { // Java 11 and later
+                    String accountId = "001";
+                    ServiceResponse updated = service.patch(api + "/sobjects/Account/" + accountId, "{\"Phone\":\"555-0100\"}");
+                    assertEquals(204, updated.getStatus());
+                    assertEquals("PATCH", salesforce.last().method);
+                }
 
                 assertEquals(200, accounts.getStatus());
                 assertEquals(201, created.getStatus(), "renewed after Salesforce's 401 and sent again");

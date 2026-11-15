@@ -34,7 +34,7 @@ public final class ServiceRequest {
     static final String DEFAULT_BYTES_TYPE = "application/octet-stream";
 
     private static final Set<String> METHODS = new HashSet<String>(
-            Arrays.asList("GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"));
+            Arrays.asList("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
     /** Methods sent without a body: HttpURLConnection turns a GET with a body into a POST, and Java 8 refuses DELETE with one. */
     private static final Set<String> NO_BODY = new HashSet<String>(Arrays.asList("GET", "HEAD", "DELETE", "OPTIONS"));
     /** Headers HttpURLConnection sets itself and quietly drops when a caller sets them (its restricted list). */
@@ -91,11 +91,21 @@ public final class ServiceRequest {
     }
 
     /**
-     * A request with any supported method: GET, HEAD, POST, PUT, DELETE or OPTIONS.
+     * A PATCH of {@code payload} (JSON by default; {@code null} for an empty body) to {@code url}. Needs Java
+     * 11 or later: it's sent with {@code java.net.http}, since {@link java.net.HttpURLConnection} can't.
      *
-     * @param payload the body (JSON by default), {@code null} for none; only POST and PUT take one
-     * @throws IllegalArgumentException if the method isn't supported (PATCH isn't yet: {@link
-     *         java.net.HttpURLConnection} can't send it), the URL isn't https, or a body-less method has a payload
+     * @throws IllegalArgumentException on Java 8, or if the URL isn't https
+     */
+    public static ServiceRequest patch(String url, String payload) {
+        return of("PATCH", url, payload);
+    }
+
+    /**
+     * A request with any supported method: GET, HEAD, POST, PUT, PATCH (Java 11 or later), DELETE or OPTIONS.
+     *
+     * @param payload the body (JSON by default), {@code null} for none; only POST, PUT and PATCH take one
+     * @throws IllegalArgumentException if the method isn't supported (PATCH on Java 8), the URL isn't https,
+     *         or a body-less method has a payload
      */
     public static ServiceRequest of(String method, String url, String payload) {
         String m = checkMethod(method);
@@ -310,12 +320,13 @@ public final class ServiceRequest {
             throw new NullPointerException("method");
         }
         String m = method.trim().toUpperCase(Locale.ROOT);
-        if ("PATCH".equals(m)) {
-            throw new IllegalArgumentException("PATCH isn't supported yet: java.net.HttpURLConnection can't send it");
+        if ("PATCH".equals(m) && !UrlConnectionTransport.patchSupported()) {
+            throw new IllegalArgumentException("PATCH needs Java 11 or later: it's sent with java.net.http, which this "
+                    + "runtime doesn't have (or the library was built on JDK 8)");
         }
         if (!METHODS.contains(m)) {
             throw new IllegalArgumentException("Method " + Strings.safe(method)
-                    + " isn't supported; use GET, HEAD, POST, PUT, DELETE or OPTIONS");
+                    + " isn't supported; use GET, HEAD, POST, PUT, PATCH, DELETE or OPTIONS");
         }
         return m;
     }

@@ -1,5 +1,6 @@
 package io.primelogiclab.oauthclient;
 
+import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -148,6 +149,54 @@ class TransportSecurityTest {
 
         org.junit.jupiter.api.Assertions.assertSame(a, transport.socketFactoryFor(tenantA));
         org.junit.jupiter.api.Assertions.assertNotSame(a, transport.socketFactoryFor(tenantB));
+    }
+
+    @Test
+    void aPatchUsesTheSameTlsAndLoginRules() throws Exception {
+        assumeTrue(UrlConnectionTransport.patchSupported(), "PATCH needs Java 11");
+        Map<String, String> json = Collections.singletonMap("Content-Type", "application/json");
+        SSLSocketFactory jvmDefault = HttpsURLConnection.getDefaultSSLSocketFactory();
+        final AtomicInteger asked = new AtomicInteger();
+        try (StubServer server = new StubServer(TestTls.serverContext(), false)) {
+            server.always("/x", new StubServer.Response(401, "text/plain", "login")
+                    .header("WWW-Authenticate", "Basic realm=\"service\""));
+            SSLContext trustAll = SSLContext.getInstance("TLS");
+            trustAll.init(null, new TrustManager[] {new TrustEverything()}, null);
+            HttpsURLConnection.setDefaultSSLSocketFactory(trustAll.getSocketFactory());
+            Authenticator.setDefault(new Authenticator() {
+                @Override
+                protected PasswordAuthentication getPasswordAuthentication() {
+                    asked.incrementAndGet();
+                    return new PasswordAuthentication("app", "app-proxy-password".toCharArray());
+                }
+            });
+
+            // the JVM's trust store doesn't know the test CA: refused, trust-all default or not
+            UrlConnectionTransport jvmTrust = new UrlConnectionTransport(Duration.ofSeconds(5), Duration.ofSeconds(10),
+                    Duration.ofSeconds(20), null);
+            IOException e = assertThrows(IOException.class,
+                    () -> jvmTrust.execute(new HttpRequest("PATCH", server.url("/x"), json, "{}".getBytes("UTF-8"))));
+            assertTrue(HttpExecutor.tlsHandshakeFailed(e), String.valueOf(e));
+
+            // with the test CA: the 401 login challenge comes back, the JVM's Authenticator never asked
+            UrlConnectionTransport testTrust = new UrlConnectionTransport(Duration.ofSeconds(5), Duration.ofSeconds(10),
+                    Duration.ofSeconds(20), TestTls.clientTrust());
+            HttpResponse response = testTrust.execute(new HttpRequest("PATCH", server.url("/x"), json, "{}".getBytes("UTF-8")));
+            assertEquals(401, response.getStatus());
+            assertEquals(0, asked.get());
+            assertEquals(1, server.requests().size());
+
+            // one JDK client per client certificate
+            Object patch = testTrust.patchTransport();
+            java.lang.reflect.Method clientFor = patch.getClass().getDeclaredMethod("clientFor", ClientKey.class);
+            ClientKey key = Fixtures.clientWithChain();
+            org.junit.jupiter.api.Assertions.assertSame(clientFor.invoke(patch, key), clientFor.invoke(patch, key));
+            org.junit.jupiter.api.Assertions.assertNotSame(clientFor.invoke(patch, key),
+                    clientFor.invoke(patch, Fixtures.clientWithChain()));
+        } finally {
+            HttpsURLConnection.setDefaultSSLSocketFactory(jvmDefault);
+            Authenticator.setDefault(null);
+        }
     }
 
     private static final class TrustEverything implements X509TrustManager {

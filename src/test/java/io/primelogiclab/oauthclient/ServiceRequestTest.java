@@ -103,12 +103,22 @@ class ServiceRequestTest {
     }
 
     @Test
-    void patchAndUnknownMethodsAreRefused() {
-        IllegalArgumentException patch = assertThrows(IllegalArgumentException.class,
-                () -> ServiceRequest.of("patch", URL, "{}"));
-        assertTrue(patch.getMessage().contains("PATCH"), patch.getMessage());
+    void unknownMethodsAreRefused() {
         assertThrows(IllegalArgumentException.class, () -> ServiceRequest.of("TRACE", URL, null));
         assertThrows(NullPointerException.class, () -> ServiceRequest.of(null, URL, null));
+    }
+
+    @Test
+    void patchTakesABodyOnJava11AndExplainsItselfOnJava8() {
+        if (UrlConnectionTransport.patchSupported()) {
+            ServiceRequest patch = ServiceRequest.patch(URL, "{}");
+            assertEquals("PATCH", patch.getMethod());
+            assertEquals(ServiceRequest.DEFAULT_TEXT_TYPE, patch.headersToSend().get("Content-Type"));
+            assertEquals("PATCH", ServiceRequest.of("patch", URL, null).getMethod());
+        } else {
+            IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> ServiceRequest.patch(URL, "{}"));
+            assertTrue(e.getMessage().contains("PATCH needs Java 11 or later"), e.getMessage());
+        }
     }
 
     @Test

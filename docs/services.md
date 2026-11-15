@@ -24,6 +24,7 @@ What each example service needs from a backend that calls it with no user presen
 - Response has `expires_in` (one hour). No refresh token: sign a new assertion.
 - Setup: integration key, RSA key pair, one-time individual or admin consent (`consent_required` until then).
 - API base: `GET /oauth/userinfo` on the auth host gives `accounts[].base_uri`; calls go to `{base_uri}/restapi/v2.1/accounts/{account_id}`. DocuSign says to cache it.
+- Hosts: the auth host (`account-d.docusign.com`, `account.docusign.com`) and the regional `docusign.net` hosts of the base URIs (the userinfo example shows `https://eu.docusign.net` and `https://na3.docusign.net`; `demo.docusign.net` for developer accounts), so `allowedHost("account-d.docusign.com", "*.docusign.net")`.
 - Sources: [JWT get token](https://developers.docusign.com/platform/auth/jwt-get-token/), [JWT overview](https://developers.docusign.com/platform/auth/jwt/), [userinfo](https://developers.docusign.com/platform/auth/reference/user-info/), [scopes](https://developers.docusign.com/platform/auth/reference/scopes/)
 
 ## Salesforce
@@ -32,6 +33,7 @@ What each example service needs from a backend that calls it with no user presen
 - Client credentials: My Domain host only. Secret in a Basic header ("more secure") or in the body. No scopes in the request. Run-as integration user set on the app.
 - Response (both): `access_token`, `instance_url`, `id`, `token_type`, `scope`; **no `expires_in`**. Lifetime is the session timeout from the app, profile or org settings. No refresh token.
 - Setup (JWT): certificate on the external client app; users pre-authorized by profile or permission set.
+- Hosts: `instance_url` is the org's My Domain URL, `MyDomainName.my.salesforce.com`, and with enhanced domains a sandbox's is `MyDomainName--SandboxName.sandbox.my.salesforce.com`, so `allowedHost("*.my.salesforce.com")`. Sources: [My Domain URL formats](https://developer.salesforce.com/docs/atlas.en-us.identityImplGuide.meta/identityImplGuide/domain_name_app_url_changes.htm), [enhanced domains](https://developer.salesforce.com/docs/atlas.en-us.identityImplGuide.meta/identityImplGuide/domain_name_enhanced.htm).
 - Sources: [JWT bearer flow](https://help.salesforce.com/s/articleView?id=xcloud.remoteaccess_oauth_jwt_flow.htm&type=5), [client credentials flow](https://help.salesforce.com/s/articleView?id=xcloud.remoteaccess_oauth_client_credentials_flow.htm&type=5), [endpoints](https://help.salesforce.com/s/articleView?id=xcloud.remoteaccess_oauth_endpoints.htm&type=5), [errors](https://help.salesforce.com/s/articleView?id=xcloud.remoteaccess_oauth_flow_errors.htm&type=5), [access tokens](https://help.salesforce.com/s/articleView?id=xcloud.remoteaccess_access_tokens.htm&type=5)
 
 ## Jira Cloud (Atlassian)

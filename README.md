@@ -24,6 +24,67 @@ try (OAuthServiceClient service = new OAuthServiceClient()) {
 - `OAuthServiceClient.builder()` sets the timeouts, retries and response size limit; `ServiceRequest.timeout(...)` sets one call's.
 - `ClientInfo.allowedHost("*.my.salesforce.com")` keeps the token to the hosts you list; recommended when URLs come from responses.
 
+## Examples
+
+### DocuSign: one integration per tenant (JWT grant)
+
+Before you start: an integration key, the RSA key pair DocuSign generated for it (its PKCS#1 PEM is fine), the ID (a GUID) of the user the app acts as, and that user's one-time consent (or an admin's). Until consent is given, the token request fails with an `OAuthServiceException` whose `getError()` is `consent_required`.
+
+```java
+ClientInfo docusign = ClientInfo.forTenant("docusign", tenantCode)
+        .tokenUrl("https://account-d.docusign.com/oauth/token")     // account.docusign.com in production
+        .grant(Grant.JWT_BEARER)
+        .clientId(integrationKey)
+        .signingKey(ClientKey.fromPem(rsaPrivateKeyPem))
+        .subject(userId)                                            // the user the app acts as
+        .assertionAudience("account-d.docusign.com")                // a bare host, no https://
+        .assertionClaim("scope", "signature impersonation")         // DocuSign wants the scopes in the assertion
+        .allowedHost("account-d.docusign.com", "*.docusign.net")    // userinfo, and the account's base URI
+        .build();
+
+try (OAuthServiceClient service = new OAuthServiceClient()) {
+    service.initialize(docusign);
+    // once per account, then keep it: the host the account's API is on (accounts[].base_uri)
+    ServiceResponse userinfo = service.get("https://account-d.docusign.com/oauth/userinfo");
+    String baseUri = ...;   // from userinfo.getBody(), with your JSON library
+    ServiceResponse created = service.post(baseUri + "/restapi/v2.1/accounts/" + accountId + "/envelopes", envelopeJson);
+}
+```
+
+- Each tenant gets its own `ClientInfo`, with its own user and account.
+- A token lasts an hour; the library signs a new assertion for the next one. There's no refresh token.
+
+### Salesforce: one integration for all tenants (JWT bearer flow)
+
+Before you start: an external client app with the certificate for your key uploaded and its consumer key, and the integration user pre-authorized through a profile or permission set.
+
+```java
+ClientInfo salesforce = ClientInfo.global("salesforce")
+        .tokenUrl("https://login.salesforce.com/services/oauth2/token")   // test.salesforce.com for a sandbox
+        .grant(Grant.JWT_BEARER)
+        .clientId(consumerKey)
+        .signingKey(ClientKey.fromPem(privateKeyPem))
+        .subject("integration@example.com")                               // the pre-authorized user
+        .assertionAudience("https://login.salesforce.com")                // a full URL here
+        .allowedHost("*.my.salesforce.com")                               // instance_url, sandboxes too
+        .build();
+
+try (OAuthServiceClient service = new OAuthServiceClient()) {
+    service.initialize(salesforce);
+    String api = service.token().getField("instance_url") + "/services/data/" + apiVersion;   // e.g. v62.0
+    ServiceResponse accounts = service.get(api + "/query?q=" + URLEncoder.encode("SELECT Id, Name FROM Account", "UTF-8"));
+    ServiceResponse created = service.post(api + "/sobjects/Account", "{\"Name\":\"Acme\"}");
+}
+```
+
+- Salesforce sends no `expires_in`, so the token is kept until Salesforce answers 401; the library then renews it and sends the call again.
+- No scopes go in the request: they come from the app's policies.
+- Record updates use PATCH, which arrives before 1.0.0.
+
+### Answers and errors
+
+Every answer comes back as a `ServiceResponse`, whatever its status: check `getStatus()` and read `getBody()` (or `getBodyBytes()` for a PDF). A failure without an answer, such as a refused token request or a timeout, throws `OAuthServiceException`; `getError()` holds the OAuth error, for example `consent_required` or `invalid_grant`.
+
 ## Documentation
 
 - [How the library works](docs/library-overview.md) ([HTML with diagrams](docs/library-overview.html)): grants, client authentication, the token cache, retries, errors and a `ClientInfo` for each example service.

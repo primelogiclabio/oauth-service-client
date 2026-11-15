@@ -3,11 +3,9 @@
 Goal: Java library that makes outbound calls to OAuth-protected external services (e.g. DocuSign, Salesforce, Jira, Vertex payroll, Entra ID apps, Okta apps, Auth0, Oracle Integration (OIC)) for backend code: the caller passes client info (per service and tenant, or global) and the endpoint and payload; the library gets the token, cached per (service, tenant, user, scopes) until shortly before it expires, and makes the request. Basic first (token requests, public API, outbound requests, tests, README), then features on top.
 
 ## Current focus
-- (none)
+- PATCH support, in 1.0.0 (HttpURLConnection can't send it; Salesforce updates use it): a Java 11+ transport, a method override or a pluggable transport, decided then
 
 ## Next
-- [ ] README with DocuSign (per tenant) and Salesforce (global) examples
-- [ ] PATCH support, in 1.0.0 (HttpURLConnection can't send it; Salesforce updates use it): a Java 11+ transport, a method override or a pluggable transport, decided then
 - [ ] Security review of the code since the 2026-11-14 review (401 resend, retries, settings, allowed hosts) before the release
 - [ ] Signing, the last step before 1.0.0: sign commits and the v1.0.0 tag (SSH key ~/.ssh/id_ed25519_primelogiclab, no passphrase, or a GPG key), register the key on GitHub as a signing key so commits show Verified, and a GPG key for the Maven Central files
 - [ ] Release 1.0.0 once the items above are done: API pass, javadoc without warnings, sources and javadoc jars, CHANGELOG with known limitations; a release candidate you verify first, then the repo goes public and 1.0.0 goes to Maven Central (signed; io.primelogiclab namespace verified through primelogiclab.io DNS), tag v1.0.0
@@ -20,6 +18,7 @@ Goal: Java library that makes outbound calls to OAuth-protected external service
 - [ ] Keep-alive connection reuse: every call opens a new TCP and TLS connection (disconnect after each, a socket factory per call); reuse would save handshakes, now that TLS sessions resume per client certificate
 
 ## Done (last 10)
+- README examples: DocuSign per tenant (JWT grant, consent, userinfo base URI) and Salesforce global (JWT bearer, instance_url, renewal after 401), answers and errors; ReadmeExamplesTest mirrors them (DocuSign assertion claims, Salesforce flow against a stand-in); services.md gained the vendors' host patterns with sources; tests pass on JDK 8 and 21 (197)
 - Allowed hosts per ClientInfo: allowedHost(...) with exact hosts or *.domain, checked before a token is fetched for calls carrying the ClientInfo's token or client certificate, malformed entries reported by build(); docs recommend it for URLs from responses; tests pass on JDK 8 and 21 (195), 5 mutation checks caught
 - Live mutual-TLS service call at Keycloak: a certificate-bound token (RFC 8705) is accepted at userinfo with its client certificate and refused (401) without it; tests pass on JDK 8 and 21 (190) and against Keycloak; dropping the certificate from service calls fails the live test
 - Outbound requests: a 401 to the library's token renews it once and resends within the same deadline; default retries only when nothing was sent or on 429/503 with Retry-After (seconds or date), retryOnFailure() for more; OAuthServiceClient.builder() timeouts, retries and size limit, ServiceRequest.timeout; mTLS socket factory cached per ClientKey; tests pass on JDK 8 and 21 (189) and against Keycloak (a revoked token renewed), 11 mutation checks caught
@@ -29,7 +28,6 @@ Goal: Java library that makes outbound calls to OAuth-protected external service
 - Token cache: TokenCache per (service, tenant) on Caffeine 2.9.3 (one renewal per key, renewed 5 minutes before expiry, expired entries evicted, renew() after a 401) and AccessToken (expiry from JWT exp, expires_in or introspection via the new ClientInfo.introspectionUrl); tests pass on JDK 8 and 21, 24 mutation checks caught
 - Checked grant and client authentication for all 8 example services (docs/services.md, sourced): ClientInfo gained clientSecretInBody (CLIENT_SECRET_BASIC/POST) and assertionClaim; behaviour gaps noted on Next items; tests pass on JDK 8 and 21, 8 mutation checks caught
 - ClientInfo entity: ClientInfo (forTenant/global builder, every problem reported at once, secrets masked), ClientKey (PEM or keystore, optional kid) and Grant; tests pass on JDK 8 and 21, 14 mutation checks caught
-- Set up repo: private GitHub repo, Apache-2.0, Maven build for Java 8 (--release 8 on 9+), CI on JDK 8/21 x Linux/Windows; tests pass locally and in CI (79e60f8)
 
 ## Decisions
 - The library gets the token and makes the outbound request, the caller supplying only client info, a full-URL endpoint and payload, because config belongs to the service and tenant; AutoCloseable (initialize, calls, close) for try-with-resources; every HTTP answer, any status, goes back, and only failures without an answer (connection, timeout, TLS, getting the token) throw; a caller's own token (post(token, url, json), ServiceRequest.token) is used as is: no cache, a 401 goes back to the caller

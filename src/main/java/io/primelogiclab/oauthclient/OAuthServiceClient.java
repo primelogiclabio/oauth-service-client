@@ -1,5 +1,7 @@
 package io.primelogiclab.oauthclient;
 
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -169,10 +171,14 @@ public final class OAuthServiceClient implements AutoCloseable {
         ClientInfo info = clientInfo;
         HttpExecutor.Retry retry = request.isRetryOnFailure() ? HttpExecutor.Retry.ALWAYS : HttpExecutor.Retry.BUSY_OR_NOT_SENT;
         if (request.hasOwnToken()) {
+            if (info != null && info.getClientCertificate() != null) {
+                checkHost(info, request.getUrl()); // the client certificate goes along
+            }
             // the caller's token is used as is: a 401 goes back to the caller
             return new ServiceResponse(send(request, "Bearer " + request.ownToken(), info, retry, deadline(request)));
         }
-        AccessToken token = cache.get(requireInfo(info), request.getScopes(), fetcher);
+        checkHost(requireInfo(info), request.getUrl()); // before any token is fetched
+        AccessToken token = cache.get(info, request.getScopes(), fetcher);
         // one deadline for the whole call, the resend after a 401 included
         long deadline = deadline(request);
         HttpResponse response = send(request, token.toAuthorizationHeader(), info, retry, deadline);
@@ -184,6 +190,23 @@ public final class OAuthServiceClient implements AutoCloseable {
             }
         }
         return new ServiceResponse(response);
+    }
+
+    /**
+     * Refuses a call to a host the client info doesn't allow, before anything of it (its token, its client
+     * certificate) is sent.
+     */
+    private static void checkHost(ClientInfo info, String url) {
+        String host;
+        try {
+            host = new URI(url).getHost();
+        } catch (URISyntaxException e) {
+            host = null; // ServiceRequest checked the URL already
+        }
+        if (!info.allowsHost(host)) {
+            throw new IllegalArgumentException("Host " + Strings.safe(String.valueOf(host)) + " isn't an allowed host for "
+                    + info.label() + " (ClientInfo.allowedHost)");
+        }
     }
 
     /** When this call must end, in {@link System#nanoTime()} terms: its own timeout, else the client's. */

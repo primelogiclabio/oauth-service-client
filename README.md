@@ -22,6 +22,7 @@ try (OAuthServiceClient service = new OAuthServiceClient()) {
 - `service.token()` gives the token itself, for response fields such as Salesforce's `instance_url`.
 - When the service answers 401, the token is renewed once and the call sent again; a busy answer with `Retry-After` is retried after that pause.
 - `OAuthServiceClient.builder()` sets the timeouts, retries and response size limit; `ServiceRequest.timeout(...)` sets one call's.
+- `ClientInfo.allowedHost("*.my.salesforce.com")` keeps the token to the hosts you list; recommended when URLs come from responses.
 
 ## Documentation
 

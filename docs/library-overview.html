@@ -303,6 +303,7 @@ main [id]{scroll-margin-top:64px}
           <li><strong>Settings:</strong> <code>OAuthServiceClient.builder()</code> sets the timeouts, the retries and the response size limit; <code>ServiceRequest.timeout(...)</code> sets one call's limit, for a large download. The timeouts also apply to the instance's token requests.</li>
           <li><strong>Checked first:</strong> the URL must be https before any token is fetched; a bad URL or token gives an <code>IllegalArgumentException</code> that doesn't repeat the value.</li>
           <li><strong>Client certificate:</strong> presented on service calls too whenever the <code>ClientInfo</code> has one, for certificate-bound tokens.</li>
+          <li><strong>Allowed hosts:</strong> with <code>allowedHost(...)</code> set, a call to any other host is refused with an <code>IllegalArgumentException</code> before a token is fetched. It applies to every call that carries the <code>ClientInfo</code>'s token or client certificate.</li>
           <li><strong>Lifetime:</strong> <code>initialize</code> can be called again, for example after a secret rotation. Tokens are cached for the whole JVM (per class loader), so they outlive <code>close()</code> and instances with the same <code>ClientInfo</code> share them. One instance is thread-safe; after <code>close()</code> calls throw <code>IllegalStateException</code>.</li>
         </ul>
       </section>
@@ -341,6 +342,7 @@ main [id]{scroll-margin-top:64px}
             <tr><td><code>tokenParameter(name, value)</code></td><td>optional</td><td>Extra form fields, e.g. <code>audience</code>. Names the library sets (<code>grant_type</code>, <code>scope</code>, <code>client_id</code>, …) are refused.</td></tr>
             <tr><td><code>introspectionUrl</code></td><td>planned</td><td>Stored and checked now; used once introspection is built.</td></tr>
             <tr><td><code>attribute(name, value)</code></td><td>optional</td><td>The caller's own data (an account ID, a base URL); never sent.</td></tr>
+            <tr><td><code>allowedHost(...)</code></td><td>optional, recommended</td><td>Hosts that calls carrying this token or client certificate may go to: <code>api.example.com</code>, or <code>*.my.salesforce.com</code> for any host below that domain. Without any, every https host is allowed.</td></tr>
           </tbody>
         </table></div>
         <p>Settings that don't fit the grant are refused rather than ignored: a <code>subject</code> with client credentials, a refresh token without one, a <code>refreshToken</code> outside the refresh grant, a secret and a signing key both used to authenticate the client, an expired certificate.</p>
@@ -622,7 +624,7 @@ ClientInfo.global("bank")
           <li><strong>At most once:</strong> every token request and every POST to a service is sent in a mode that stops Java from resending it; a 401 answer's body can't be read in that mode, so a token endpoint's 401 is reported as <code>invalid_client</code>. Java may resend a GET, PUT or DELETE once when a connection fails before the answer.</li>
           <li><strong>Java's Authenticator:</strong> on Java 9 and later the JVM's default <code>java.net.Authenticator</code> is asked only for proxy logins, never for a service's 401 login challenge. On Java 8 that holds for POSTs only: an application on Java 8 with a default Authenticator should make it check <code>getRequestorType()</code>.</li>
           <li><strong>Messages and logs:</strong> never a secret, token or assertion; credentials a server echoes back in an error are replaced by <code>****</code>; URLs are shown without user info or query.</li>
-          <li><strong>Not yet:</strong> a list of the hosts a <code>ClientInfo</code>'s token may go to: a URL taken from a response, such as Salesforce's <code>instance_url</code>, is used as given.</li>
+          <li><strong>Allowed hosts:</strong> set <code>allowedHost(...)</code> on each <code>ClientInfo</code> whenever a URL can come from a response (Salesforce's <code>instance_url</code>, a Graph next link, DocuSign's <code>base_uri</code>): a call to any other host is then refused before the token is fetched. Without it, every https host is allowed.</li>
         </ul>
       </section>
 

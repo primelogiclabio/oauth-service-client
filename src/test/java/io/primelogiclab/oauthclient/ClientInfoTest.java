@@ -426,6 +426,46 @@ class ClientInfoTest {
     }
 
     @Test
+    void allowedHostsAreNormalizedAndKept() {
+        ClientInfo info = secretClient().allowedHost("API.Example.com.", "*.my.salesforce.com")
+                .allowedHost("api.example.com", "[::1]", "10.0.0.5").build();
+        assertEquals(Arrays.asList("api.example.com", "*.my.salesforce.com", "[::1]", "10.0.0.5"), info.getAllowedHosts());
+        assertTrue(secretClient().build().getAllowedHosts().isEmpty());
+        assertTrue(info.toString().contains("allowedHosts=[api.example.com, *.my.salesforce.com, [::1], 10.0.0.5]"),
+                info.toString());
+        // not a token setting: changing the list keeps the cached token
+        assertEquals(secretClient().build().tokenSettings(), info.tokenSettings());
+    }
+
+    @Test
+    void malformedAllowedHostsAreAllReported() {
+        String m = assertThrows(IllegalArgumentException.class, () -> secretClient().allowedHost(" ", "https://x.com",
+                "x.com/path", "x.com:443", "user@x.com", "*", "*.com", "a.*.com", "x y.com", "[zz]").build()).getMessage();
+        for (String part : Arrays.asList("allowedHost must not be blank",
+                "'https://x.com' must be a host name only", "'x.com/path' must be a host name only",
+                "'x.com:443' must be a host name only", "'user@x.com' must be a host name only",
+                "'*' may only use * as its first label", "'*.com' is too broad", "'a.*.com' may only use * as its first label",
+                "'x y.com' is not a valid host name", "'[zz]' is not a valid IPv6 address")) {
+            assertTrue(m.contains(part), part + " in " + m);
+        }
+    }
+
+    @Test
+    void allowsHostMatchesExactlyOrBelowAWildcard() {
+        ClientInfo info = secretClient().allowedHost("api.example.com", "*.my.salesforce.com").build();
+        assertTrue(info.allowsHost("api.example.com"));
+        assertTrue(info.allowsHost("API.EXAMPLE.COM."));
+        assertTrue(info.allowsHost("acme.my.salesforce.com"));
+        assertTrue(info.allowsHost("eu.acme.my.salesforce.com"));
+        assertFalse(info.allowsHost("my.salesforce.com"), "the wildcard is for hosts below the domain");
+        assertFalse(info.allowsHost("evilmy.salesforce.com"));
+        assertFalse(info.allowsHost("example.com"));
+        assertFalse(info.allowsHost("api.example.com.evil.net"));
+        assertFalse(info.allowsHost(null));
+        assertTrue(secretClient().build().allowsHost("anything.example"), "no list: every host");
+    }
+
+    @Test
     void toStringAndErrorsNeverShowSecrets() {
         ClientKey key = Fixtures.clientWithChain();
         ClientInfo info = ClientInfo.forTenant("idp", "acme")

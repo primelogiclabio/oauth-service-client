@@ -104,6 +104,7 @@ OAuthServiceClient service = OAuthServiceClient.builder()
 - **Settings:** `OAuthServiceClient.builder()` sets the timeouts, the retries and the response size limit; `ServiceRequest.timeout(...)` sets one call's limit, for a large download. The timeouts also apply to the instance's token requests.
 - **Checked first:** the URL must be https before any token is fetched; a bad URL or token gives an `IllegalArgumentException` that doesn't repeat the value.
 - **Client certificate:** presented on service calls too whenever the `ClientInfo` has one, for certificate-bound tokens.
+- **Allowed hosts:** with `allowedHost(...)` set, a call to any other host is refused with an `IllegalArgumentException` before a token is fetched. It applies to every call that carries the `ClientInfo`'s token or client certificate.
 - **Lifetime:** `initialize` can be called again, for example after a secret rotation. Tokens are cached for the whole JVM (per class loader), so they outlive `close()` and instances with the same `ClientInfo` share them. One instance is thread-safe; after `close()` calls throw `IllegalStateException`.
 
 ## One token, step by step
@@ -137,6 +138,7 @@ Build one with `ClientInfo.forTenant(service, tenant)` or `ClientInfo.global(ser
 | `tokenParameter(name, value)` | optional | Extra form fields, e.g. `audience`. Names the library sets (`grant_type`, `scope`, `client_id`, …) are refused. |
 | `introspectionUrl` | planned | Stored and checked now; used once introspection is built. |
 | `attribute(name, value)` | optional | The caller's own data (an account ID, a base URL); never sent. |
+| `allowedHost(...)` | optional, recommended | Hosts that calls carrying this token or client certificate may go to: `api.example.com`, or `*.my.salesforce.com` for any host below that domain. Without any, every https host is allowed. |
 
 Settings that don't fit the grant are refused rather than ignored: a `subject` with client credentials, a refresh token without one, a `refreshToken` outside the refresh grant, a secret and a signing key both used to authenticate the client, an expired certificate.
 
@@ -373,7 +375,7 @@ ClientInfo.global("bank")
 - **At most once:** every token request and every POST to a service is sent in a mode that stops Java from resending it; a 401 answer's body can't be read in that mode, so a token endpoint's 401 is reported as `invalid_client`. Java may resend a GET, PUT or DELETE once when a connection fails before the answer.
 - **Java's Authenticator:** on Java 9 and later the JVM's default `java.net.Authenticator` is asked only for proxy logins, never for a service's 401 login challenge. On Java 8 that holds for POSTs only: an application on Java 8 with a default Authenticator should make it check `getRequestorType()`.
 - **Messages and logs:** never a secret, token or assertion; credentials a server echoes back in an error are replaced by `****`; URLs are shown without user info or query.
-- **Not yet:** a list of the hosts a `ClientInfo`'s token may go to: a URL taken from a response, such as Salesforce's `instance_url`, is used as given.
+- **Allowed hosts:** set `allowedHost(...)` on each `ClientInfo` whenever a URL can come from a response (Salesforce's `instance_url`, a Graph next link, DocuSign's `base_uri`): a call to any other host is then refused before the token is fetched. Without it, every https host is allowed.
 
 ## Testing
 

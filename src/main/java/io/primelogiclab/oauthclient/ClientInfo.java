@@ -93,9 +93,10 @@ public final class ClientInfo {
     private final Map<String, String> tokenParameters;
     private final String introspectionUrl;
     private final Map<String, String> attributes;
+    private final List<String> allowedHosts;
 
     private ClientInfo(Builder b, List<String> scopes, Map<String, String> assertionClaims,
-                       Map<String, String> tokenParameters, Map<String, String> attributes) {
+                       Map<String, String> tokenParameters, Map<String, String> attributes, List<String> allowedHosts) {
         this.service = b.service;
         this.tenant = b.global ? null : b.tenant;
         this.tokenUrl = b.tokenUrl;
@@ -113,6 +114,7 @@ public final class ClientInfo {
         this.tokenParameters = tokenParameters;
         this.introspectionUrl = b.introspectionUrl;
         this.attributes = attributes;
+        this.allowedHosts = allowedHosts;
     }
 
     /** Client info for one tenant of a service, e.g. a DocuSign account per customer. */
@@ -242,6 +244,45 @@ public final class ClientInfo {
     }
 
     /**
+     * The hosts calls with this client info's token or client certificate may go to, lowercase; empty
+     * when any https host is allowed. Unmodifiable.
+     */
+    public List<String> getAllowedHosts() {
+        return allowedHosts;
+    }
+
+    /**
+     * True when a call to {@code host} may carry this client info's token or client certificate: there is
+     * no allowed-host list, or the host is on it, exactly or below a {@code *.} entry. Case doesn't matter,
+     * and a trailing dot is ignored.
+     */
+    public boolean allowsHost(String host) {
+        if (allowedHosts.isEmpty()) {
+            return true;
+        }
+        if (host == null) {
+            return false;
+        }
+        String h = normalizeHost(host);
+        for (String allowed : allowedHosts) {
+            if (allowed.startsWith("*.")) {
+                String suffix = allowed.substring(1); // ".example.com"
+                if (h.endsWith(suffix) && h.length() > suffix.length()) {
+                    return true;
+                }
+            } else if (allowed.equals(h)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String normalizeHost(String host) {
+        String h = host.trim().toLowerCase(Locale.ROOT);
+        return h.endsWith(".") ? h.substring(0, h.length() - 1) : h;
+    }
+
+    /**
      * The settings that decide what a token grants: a cached token obtained with other values isn't
      * reused. Credentials are left out, so a rotated secret, key or refresh token keeps the cached token;
      * the client certificate is in, since a token may be bound to it (RFC 8705).
@@ -291,6 +332,7 @@ public final class ClientInfo {
                 + (tokenParameters.isEmpty() ? "" : ", tokenParameters=" + Strings.safe(tokenParameters.keySet().toString()))
                 + (introspectionUrl == null ? "" : ", introspectionUrl=" + displayUrl(introspectionUrl))
                 + (attributes.isEmpty() ? "" : ", attributes=" + Strings.safe(attributes.keySet().toString()))
+                + (allowedHosts.isEmpty() ? "" : ", allowedHosts=" + Strings.safe(allowedHosts.toString()))
                 + '}';
     }
 
@@ -390,6 +432,7 @@ public final class ClientInfo {
         private final Map<String, String> tokenParameters = new LinkedHashMap<String, String>();
         private String introspectionUrl;
         private final Map<String, String> attributes = new LinkedHashMap<String, String>();
+        private final List<String> allowedHosts = new ArrayList<String>();
 
         private Builder(String service, String tenant, boolean global) {
             this.service = Strings.trim(service);
@@ -516,6 +559,22 @@ public final class ClientInfo {
             return this;
         }
 
+        /**
+         * Hosts that calls carrying this client info's token or client certificate may go to, one per
+         * argument; set again to add more. An exact host ({@code api.example.com}), or {@code *.} and a
+         * domain for any host below it ({@code *.my.salesforce.com}, not {@code my.salesforce.com} itself).
+         * Without any, every https host is allowed. Recommended whenever a URL can come from a response,
+         * such as Salesforce's {@code instance_url}.
+         */
+        public Builder allowedHost(String... v) {
+            if (v == null) {
+                allowedHosts.add(null);
+            } else {
+                allowedHosts.addAll(Arrays.asList(v));
+            }
+            return this;
+        }
+
         /** The caller's own data, kept with the client info and never sent; set again to replace. */
         public Builder attribute(String name, String value) {
             attributes.put(Strings.trim(name), value);
@@ -563,11 +622,58 @@ public final class ClientInfo {
             Map<String, String> claims = toMap("assertionClaim", assertionClaims, RESERVED_ASSERTION_CLAIMS, problems);
             Map<String, String> params = toMap("tokenParameter", tokenParameters, RESERVED_TOKEN_PARAMETERS, problems);
             Map<String, String> attrs = toMap("attribute", attributes, Collections.<String>emptySet(), problems);
+            List<String> hosts = checkAllowedHosts(allowedHosts, problems);
             if (!problems.isEmpty()) {
                 throw new IllegalArgumentException("Invalid ClientInfo for " + label(service, tenant, global) + ": "
                         + String.join("; ", problems));
             }
-            return new ClientInfo(this, scopeList, claims, params, attrs);
+            return new ClientInfo(this, scopeList, claims, params, attrs, hosts);
+        }
+
+        /** Lowercase hosts without duplicates, in the order given; a malformed one goes to {@code problems}. */
+        private static List<String> checkAllowedHosts(List<String> hosts, List<String> problems) {
+            Set<String> out = new LinkedHashSet<String>();
+            for (String raw : hosts) {
+                if (Strings.isBlank(raw)) {
+                    problems.add("allowedHost must not be blank");
+                    continue;
+                }
+                String h = normalizeHost(raw);
+                String problem = hostProblem(h);
+                if (problem != null) {
+                    problems.add("allowedHost '" + Strings.safe(raw.trim()) + "' " + problem);
+                } else {
+                    out.add(h);
+                }
+            }
+            return Collections.unmodifiableList(new ArrayList<String>(out));
+        }
+
+        /** Why {@code h} (lowercase, no trailing dot) can't be an allowed host, or {@code null}. */
+        private static String hostProblem(String h) {
+            if (h.startsWith("[") && h.endsWith("]")) {
+                return h.length() > 2 && h.substring(1, h.length() - 1).matches("[0-9a-f:.]+")
+                        ? null : "is not a valid IPv6 address";
+            }
+            if (h.contains("://") || h.contains("/") || h.contains("@") || h.contains(":")) {
+                return "must be a host name only: no scheme, path, user info or port";
+            }
+            String name = h;
+            if (h.contains("*")) {
+                if (!h.startsWith("*.") || h.indexOf('*', 1) >= 0) {
+                    return "may only use * as its first label, as in *.example.com";
+                }
+                name = h.substring(2);
+                if (name.indexOf('.') < 0) {
+                    return "is too broad: a wildcard needs a domain of at least two labels, as in *.example.com";
+                }
+            }
+            for (String label : name.split("\\.", -1)) {
+                if (!label.matches("[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")) {
+                    return "is not a valid host name";
+                }
+            }
+            return null;
         }
 
         private void checkGrant(List<String> problems) {

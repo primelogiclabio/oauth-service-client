@@ -540,6 +540,41 @@ class OAuthServiceClientTest {
         assertThrows(IllegalArgumentException.class, () -> ServiceRequest.get(server.url("/slow")).timeout(Duration.ZERO));
     }
 
+    // ------------------------------------------------------------------ allowed hosts
+
+    @Test
+    void callsGoOnlyToAllowedHosts() throws Exception {
+        StubServer server = server(false);
+        server.always("/items", StubServer.json(200, "{}"));
+        OAuthServiceClient allowed = client(infoBuilder().allowedHost("LOCALHOST").build());
+        OAuthServiceClient elsewhere = client(infoBuilder().allowedHost("*.example.com").build());
+
+        assertEquals(200, allowed.get(server.url("/items")).getStatus());
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> elsewhere.get(server.url("/items")));
+
+        assertTrue(e.getMessage().contains("Host localhost isn't an allowed host for svc/acme"), e.getMessage());
+        assertEquals(1, server.requests().size());
+        assertEquals(1, fetcher.count.get(), "no token fetched for the refused call");
+    }
+
+    @Test
+    void anOwnTokenIsCheckedOnlyWhenTheClientCertificateGoesAlong() throws Exception {
+        StubServer server = server(true);
+        server.always("/items", StubServer.json(200, "{}"));
+        OAuthServiceClient withCertificate = client(ClientInfo.forTenant("svc", "acme").tokenUrl("https://login.example.com/token")
+                .clientId("id").clientCertificate(Fixtures.clientWithChain()).allowedHost("*.example.com").build());
+
+        assertThrows(IllegalArgumentException.class, () -> withCertificate.get(OWN_TOKEN, server.url("/items")));
+        assertTrue(server.requests().isEmpty());
+
+        StubServer plain = server(false);
+        plain.always("/items", StubServer.json(200, "{}"));
+        OAuthServiceClient withoutCertificate = client(infoBuilder().allowedHost("*.example.com").build());
+        // nothing of the client info is sent with the caller's own token here, so the list doesn't apply
+        assertEquals(200, withoutCertificate.get(OWN_TOKEN, plain.url("/items")).getStatus());
+        assertEquals(0, fetcher.count.get());
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private OAuthServiceClient client(ClientInfo info) {
@@ -569,6 +604,10 @@ class OAuthServiceClientTest {
         UrlConnectionTransport transport = new UrlConnectionTransport(Duration.ofSeconds(5), Duration.ofSeconds(10),
                 Duration.ofSeconds(20), TestTls.clientTrust());
         return new HttpExecutor(transport, 0, Duration.ZERO, HttpExecutor.THREAD_SLEEPER, Duration.ofSeconds(20));
+    }
+
+    private static ClientInfo.Builder infoBuilder() {
+        return ClientInfo.forTenant("svc", "acme").tokenUrl("https://login.example.com/token").clientId("id").clientSecret("s");
     }
 
     private static ClientInfo info() {

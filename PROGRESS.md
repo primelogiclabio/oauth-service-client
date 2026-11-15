@@ -6,12 +6,12 @@ Goal: Java library that makes outbound calls to OAuth-protected external service
 - (none)
 
 ## Next
-- [ ] Live mutual-TLS service call at Keycloak with a certificate-bound token (RFC 8705), end to end; other outbound cases are covered (OAuthServiceClientTest, KeycloakTokenTest)
 - [ ] Allowed hosts per ClientInfo for the library token (security review): a URL from a response (Salesforce instance_url, Graph nextLink) is trusted as given today
 - [ ] README with DocuSign (per tenant) and Salesforce (global) examples
-- [ ] PATCH support, in 0.1.0 (HttpURLConnection can't send it; Salesforce updates use it): a Java 11+ transport, a method override or a pluggable transport, decided then
+- [ ] PATCH support, in 1.0.0 (HttpURLConnection can't send it; Salesforce updates use it): a Java 11+ transport, a method override or a pluggable transport, decided then
 - [ ] Security review of the code since the 2026-11-14 review (401 resend, retries, settings, allowed hosts) before the release
-- [ ] Base release (0.1.0) once the basic items above are done: how it's published (GitHub release, a Maven repository) decided then
+- [ ] Signing, the last step before 1.0.0: sign commits and the v1.0.0 tag (SSH key ~/.ssh/id_ed25519_primelogiclab, no passphrase, or a GPG key), register the key on GitHub as a signing key so commits show Verified, and a GPG key for the Maven Central files
+- [ ] Release 1.0.0 once the items above are done: API pass, javadoc without warnings, sources and javadoc jars, CHANGELOG with known limitations; a release candidate you verify first, then the repo goes public and 1.0.0 goes to Maven Central (signed; io.primelogiclab namespace verified through primelogiclab.io DNS), tag v1.0.0
 - [ ] Refresh token rotation for 3LO apps (Jira): hand each rotated refresh token back to the caller to store; JSON token request body (Atlassian documents only JSON there)
 - [ ] Short cool-down after a failed token request, so repeated failures don't use up a vendor's request cap (Vertex: 10 per 8 hours)
 - [ ] Introspection (RFC 7662, ClientInfo.introspectionUrl) for a token with no JWT exp and no expires_in (Salesforce), then AccessToken.withExpiryFrom; Salesforce's introspect endpoint takes client_id and client_secret (Basic or body), so with JWT bearer the secret authenticates the token request too: check Salesforce accepts that
@@ -21,6 +21,7 @@ Goal: Java library that makes outbound calls to OAuth-protected external service
 - [ ] Keep-alive connection reuse: every call opens a new TCP and TLS connection (disconnect after each, a socket factory per call); reuse would save handshakes, now that TLS sessions resume per client certificate
 
 ## Done (last 10)
+- Live mutual-TLS service call at Keycloak: a certificate-bound token (RFC 8705) is accepted at userinfo with its client certificate and refused (401) without it; tests pass on JDK 8 and 21 (190) and against Keycloak; dropping the certificate from service calls fails the live test
 - Outbound requests: a 401 to the library's token renews it once and resends within the same deadline; default retries only when nothing was sent or on 429/503 with Retry-After (seconds or date), retryOnFailure() for more; OAuthServiceClient.builder() timeouts, retries and size limit, ServiceRequest.timeout; mTLS socket factory cached per ClientKey; tests pass on JDK 8 and 21 (189) and against Keycloak (a revoked token renewed), 11 mutation checks caught
 - Security hardening from the 2026-11-14 review (three independent reviewers, each finding checked): the user (subject) in the cache key for JWT bearer and refresh token (which now requires it), every token request sent at most once, sockets closed at the deadline, own TLS context with strict host names, the JVM's Authenticator kept from service logins (Java 9+), and eight low fixes; docs gained Security notes; tests pass on JDK 8 and 21 (173) and against Keycloak, 18 of 20 mutation checks caught (the other two are covered twice)
 - Public API: OAuthServiceClient (initialize, get/post/put/delete with the library's or the caller's token, request(ServiceRequest), token(), close), ServiceRequest, ServiceResponse (body as bytes and text, 16 MB); each call sent once, POST never resent by the JDK, https checked before the token; README and docs updated; tests pass on JDK 8 and 21 (156), 12 mutation checks caught

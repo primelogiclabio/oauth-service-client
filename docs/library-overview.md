@@ -381,12 +381,12 @@ ClientInfo.global("bank")
 - `TokenClientTest` sends real HTTPS requests to an in-process stub server that uses the test CA in `src/test/resources/tls`, including a server that requires a client certificate.
 - `OAuthServiceClientTest` makes service calls to the stub server: each method, headers, the token shared by instances, your own token, every status, binary bodies, the size limit, a client certificate; `ServiceRequestTest` checks every rule of a request.
 - `TransportSecurityTest` checks the transport's defences: a stalled TLS handshake ends at the deadline, a trust-all default installed JVM-wide isn't used, TLS sockets check host names, and a service's login challenge never reaches the JVM's Authenticator.
-- `KeycloakTokenTest` sends real token requests to a throwaway Keycloak 26.8.1: secret in a header and in the body, `private_key_jwt` with RSA and EC keys, mutual TLS with a certificate-bound token, the JWT bearer grant and the refresh token grant. The README section "Live check against Keycloak" has the commands.
+- `KeycloakTokenTest` sends real token requests to a throwaway Keycloak 26.8.1: secret in a header and in the body, `private_key_jwt` with RSA and EC keys, mutual TLS with a certificate-bound token, the JWT bearer grant and the refresh token grant. It also calls Keycloak's userinfo endpoint as a service: a revoked token is renewed after the 401, and a certificate-bound token (RFC 8705) is accepted with its client certificate and refused without it. The README section "Live check against Keycloak" has the commands.
 - Key tests are checked by mutation: each check breaks one rule in the code (for example, swap Basic and body, drop `x5t`, leave scopes out of the cache key) and confirms a test fails.
 
 ## Planned and out of scope
 
-- **Next:** more live tests of service calls against Keycloak, the README examples, PATCH support, then the base release (0.1.0).
+- **Next:** allowed hosts per `ClientInfo`, the README examples, PATCH support and a security review of the new code, then release 1.0.0 on Maven Central.
 - **After the basics:** refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body), a short cool-down after failed token requests, introspection, metadata discovery, and vendor clients on top of the core.
 - **Unverified:** whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.
 - **Out of scope:** sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.

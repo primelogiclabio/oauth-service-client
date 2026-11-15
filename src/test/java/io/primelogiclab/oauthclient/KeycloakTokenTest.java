@@ -137,6 +137,26 @@ class KeycloakTokenTest {
         assertNotEquals(first.getValue(), service.token().getValue());
     }
 
+    @Test
+    void aCertificateBoundTokenWorksOnlyWithItsCertificate() {
+        ClientInfo info = ClientInfo.global("keycloak-mtls").tokenUrl(tokenUrl()).clientId("mtls-client")
+                .clientCertificate(Fixtures.clientWithChain()).scope("openid").build();
+        OAuthServiceClient service = new OAuthServiceClient(new TokenCache(), client, executor(),
+                OAuthServiceClient.MAX_RESPONSE_BYTES);
+        service.initialize(info);
+        String userinfo = base + "/realms/" + REALM + "/protocol/openid-connect/userinfo";
+
+        // the library presents the client certificate on the service call too (RFC 8705)
+        ServiceResponse withCertificate = service.get(userinfo);
+        assertEquals(200, withCertificate.getStatus(), withCertificate.getBody());
+
+        // the same token from a client without the certificate: Keycloak enforces the binding
+        OAuthServiceClient withoutCertificate = new OAuthServiceClient(new TokenCache(), client, executor(),
+                OAuthServiceClient.MAX_RESPONSE_BYTES);
+        ServiceResponse refused = withoutCertificate.get(service.token().getValue(), userinfo);
+        assertEquals(401, refused.getStatus(), refused.getBody());
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private String tokenUrl() {

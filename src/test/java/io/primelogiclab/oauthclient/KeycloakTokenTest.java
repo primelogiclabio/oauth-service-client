@@ -84,6 +84,17 @@ class KeycloakTokenTest {
     }
 
     @Test
+    void privateKeyJwtWithPs256WhereTheClientRequiresIt() {
+        ClientInfo.Builder info = ClientInfo.global("keycloak").tokenUrl(tokenUrl()).clientId("jwt-ps256-client")
+                .signingKey(Fixtures.clientWithChain());
+        AccessToken token = client.fetch(info.signingAlgorithm("PS256").build(), NO_SCOPES);
+        assertEquals("jwt-ps256-client", TestJwt.parse(token.getValue()).claims.get("azp"));
+        OAuthServiceException e = assertThrows(OAuthServiceException.class,
+                () -> client.fetch(info.signingAlgorithm(null).build(), NO_SCOPES));
+        assertEquals("invalid_client", e.getError(), e.getMessage());
+    }
+
+    @Test
     void privateKeyJwtWithAnEcKey() {
         AccessToken token = client.fetch(ClientInfo.global("keycloak").tokenUrl(tokenUrl()).clientId("jwt-ec-client")
                 .signingKey(Fixtures.selfSignedEc()).build(), NO_SCOPES);

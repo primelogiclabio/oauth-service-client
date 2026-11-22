@@ -528,6 +528,22 @@ class TokenCacheTest {
     }
 
     @Test
+    void anotherSigningAlgorithmIsTriedAtOnceAndSharesTheToken() {
+        Failing refused = new Failing(401, null); // e.g. a server that wants PS256 refusing an RS256 assertion
+        ClientInfo.Builder entra = ClientInfo.global("entra").tokenUrl("https://idp.example.com/token").clientId("client")
+                .signingKey(Fixtures.clientWithChain());
+        assertThrows(OAuthServiceException.class, () -> cache.get(entra.build(), refused));
+        assertThrows(OAuthServiceException.class, () -> cache.get(entra.build(), refused));
+        assertEquals(1, refused.calls.get());
+        Fetcher fetcher = new Fetcher(3600);
+        assertEquals("t1", cache.get(entra.signingAlgorithm("PS256").build(), fetcher).getValue());
+        assertEquals(1, fetcher.calls.get());
+        // what the token grants didn't change, so the other algorithm's client info gets it too
+        assertEquals("t1", cache.get(entra.signingAlgorithm(null).build(), refused).getValue());
+        assertEquals(1, refused.calls.get());
+    }
+
+    @Test
     void retryAfterLengthensTheWaitWithinTheCeiling() {
         ClientInfo info = tenant("vertex", "acme");
         Failing busy = new Failing(429, Duration.ofSeconds(120));

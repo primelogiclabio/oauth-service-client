@@ -91,7 +91,7 @@ What each example service needs from a backend that calls it with no user presen
 
 - Client secret: sent as an HTTP Basic header (RFC 6749's must-support method, Okta's default, OIC's only form) or in the body (Atlassian), so it needs a setting.
 - JWT bearer scope: a form field (OIC), an assertion claim (DocuSign) or nothing (Salesforce).
-- Assertion header: `kid` when the key has one; `x5t#S256` and `x5t` when it has a certificate (Entra, OIC). RS256 for RSA keys everywhere; ES256 for EC keys where accepted (Okta).
+- Assertion header: `kid` when the key has one; `x5t#S256` and `x5t` when it has a certificate (Entra, OIC). RS256 for RSA keys by default, which every service here accepts; PS256 with `signingAlgorithm("PS256")` where recommended (Entra) or registered (Auth0); ES256 for EC keys where accepted (Okta).
 - Assertions are short-lived (exp about a minute ahead; Auth0 allows at most 5 minutes, Salesforce 3) with a fresh `jti` every time (Okta, Salesforce and Auth0 allow one use).
 - `aud` is free text: a bare host (DocuSign), a site URL (Salesforce), the token URL (Entra, Okta), the tenant URL with a trailing slash (Auth0), the identity domain URL (OIC).
 - Token response: `expires_in` may be missing and the token opaque (Salesforce), so its expiry comes from token introspection (RFC 7662; Salesforce: `/services/oauth2/introspect`); extra fields such as `instance_url` must reach the caller.

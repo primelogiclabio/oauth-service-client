@@ -44,6 +44,7 @@ import java.util.Set;
  *         .tokenUrl("https://login.microsoftonline.com/" + directoryId + "/oauth2/v2.0/token")
  *         .clientId(applicationId)
  *         .signingKey(ClientKey.fromKeyStore(pkcs12, password))  // certificate credential
+ *         .signingAlgorithm("PS256")                             // what Entra ID recommends
  *         .scope("https://graph.microsoft.com/.default")
  *         .build();
  * }</pre>
@@ -98,6 +99,7 @@ public final class ClientInfo {
     private final String clientSecret;
     private final boolean clientSecretInBody;
     private final ClientKey signingKey;
+    private final String signingAlgorithm;
     private final ClientKey clientCertificate;
     private final String subject;
     private final String assertionAudience;
@@ -124,6 +126,7 @@ public final class ClientInfo {
         this.clientSecret = b.clientSecret;
         this.clientSecretInBody = b.clientSecretInBody;
         this.signingKey = b.signingKey;
+        this.signingAlgorithm = b.signingAlgorithm;
         this.clientCertificate = b.clientCertificate;
         this.subject = b.subject;
         this.assertionAudience = b.assertionAudience;
@@ -257,6 +260,16 @@ public final class ClientInfo {
      */
     public ClientKey getSigningKey() {
         return signingKey;
+    }
+
+    /**
+     * The JWS algorithm the signing key signs with, when one is set.
+     *
+     * @return {@code RS256}, {@code PS256}, {@code ES256}, {@code ES384} or {@code ES512}; {@code null} when the
+     *         key decides (RS256 for an RSA key, the curve's ES algorithm for an EC key)
+     */
+    public String getSigningAlgorithm() {
+        return signingAlgorithm;
     }
 
     /**
@@ -470,8 +483,9 @@ public final class ClientInfo {
     }
 
     /**
-     * A SHA-256 fingerprint of the credentials (secret, refresh token, signing key, client certificate), so a
-     * failed token request is held only against the same ones: a fixed secret or a new key is tried at once.
+     * A SHA-256 fingerprint of the credentials (secret, refresh token, signing key and algorithm, client
+     * certificate), so a failed token request is held only against the same ones: a fixed secret, a new key or
+     * another signing algorithm is tried at once.
      * Equal for equal values, also across rebuilds from the same configuration. Never shown or logged.
      */
     String credentialsFingerprint() {
@@ -493,6 +507,7 @@ public final class ClientInfo {
         part(digest, clientSecret == null ? null : clientSecret.getBytes(StandardCharsets.UTF_8));
         part(digest, refreshToken == null ? null : refreshToken.getBytes(StandardCharsets.UTF_8));
         keyParts(digest, signingKey);
+        part(digest, signingAlgorithm == null ? null : signingAlgorithm.getBytes(StandardCharsets.UTF_8));
         keyParts(digest, clientCertificate);
         return Base64.getEncoder().encodeToString(digest.digest());
     }
@@ -559,6 +574,7 @@ public final class ClientInfo {
                 + ", clientId=" + Strings.safe(clientId)
                 + (clientSecret == null ? "" : ", clientSecret=****" + (clientSecretInBody ? " (in body)" : ""))
                 + (signingKey == null ? "" : ", signingKey=" + signingKey)
+                + (signingAlgorithm == null ? "" : ", signingAlgorithm=" + signingAlgorithm)
                 + (clientCertificate == null ? "" : ", clientCertificate=" + clientCertificate)
                 + (subject == null ? "" : ", subject=" + Strings.safe(subject))
                 + (assertionAudience == null ? "" : ", assertionAudience=" + Strings.safe(assertionAudience))
@@ -661,6 +677,7 @@ public final class ClientInfo {
         private String clientSecret;
         private boolean clientSecretInBody;
         private ClientKey signingKey;
+        private String signingAlgorithm;
         private ClientKey clientCertificate;
         private String subject;
         private String assertionAudience;
@@ -780,6 +797,21 @@ public final class ClientInfo {
          */
         public Builder signingKey(ClientKey signingKey) {
             this.signingKey = signingKey;
+            return this;
+        }
+
+        /**
+         * The JWS algorithm the {@link #signingKey(ClientKey) signing key} signs with, when the token server
+         * wants another than the key's default: RS256 for an RSA key, ES256, ES384 or ES512 by an EC key's
+         * curve. Entra ID recommends PS256 (RSASSA-PSS) for certificate credentials; DocuSign, Salesforce and
+         * OIC take only RS256.
+         *
+         * @param signingAlgorithm {@code RS256} or {@code PS256} for an RSA key, the curve's own ES algorithm for
+         *                         an EC key, as JWS writes them; blank for the key's default
+         * @return this builder
+         */
+        public Builder signingAlgorithm(String signingAlgorithm) {
+            this.signingAlgorithm = Strings.trim(signingAlgorithm);
             return this;
         }
 
@@ -969,6 +1001,16 @@ public final class ClientInfo {
                 String keyProblem = Jws.signingKeyProblem(signingKey.getPrivateKey());
                 if (keyProblem != null) {
                     problems.add("signingKey can't sign: " + keyProblem);
+                }
+            }
+            if (signingAlgorithm != null) {
+                if (signingKey == null) {
+                    problems.add("signingAlgorithm is only used with a signingKey");
+                }
+                String algorithmProblem = Jws.requestedAlgorithmProblem(signingAlgorithm,
+                        signingKey == null ? null : signingKey.getPrivateKey());
+                if (algorithmProblem != null) {
+                    problems.add("signingAlgorithm " + algorithmProblem);
                 }
             }
             List<String> scopeList = checkScopes(scopes, problems);

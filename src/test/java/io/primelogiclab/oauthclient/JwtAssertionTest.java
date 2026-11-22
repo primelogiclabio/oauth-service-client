@@ -84,6 +84,42 @@ class JwtAssertionTest {
     }
 
     @Test
+    void ps256SignsBothAssertionsWithRsassaPss() throws Exception {
+        ClientKey key = Fixtures.clientWithChain();
+        X509Certificate leaf = key.getCertificateChain().get(0);
+        ClientInfo entra = ClientInfo.global("graph").tokenUrl(TOKEN_URL).clientId("app-id").signingKey(key)
+                .signingAlgorithm("PS256").build();
+        TestJwt client = TestJwt.parse(JwtAssertion.clientAssertion(entra, TOKEN_URL, NOW));
+        assertEquals("PS256", client.header.get("alg"));
+        assertEquals(256, client.signature.length, "a 2048-bit key's signature");
+        assertTrue(client.verifies(leaf.getPublicKey()));
+        assertFalse(client.verifiesAs("RS256", leaf.getPublicKey()), "PSS, not PKCS#1 v1.5 under another name");
+
+        ClientInfo bearer = ClientInfo.global("idp").tokenUrl(TOKEN_URL).grant(Grant.JWT_BEARER).clientId("app")
+                .signingKey(key).signingAlgorithm("PS256").assertionAudience("https://idp.example.com").build();
+        TestJwt grant = TestJwt.parse(JwtAssertion.grantAssertion(bearer, NOW));
+        assertEquals("PS256", grant.header.get("alg"));
+        assertTrue(grant.verifies(leaf.getPublicKey()));
+    }
+
+    @Test
+    void anAlgorithmNamedForItsKeySignsAsWithout() throws Exception {
+        ClientKey rsa = Fixtures.clientWithChain();
+        ClientInfo oic = ClientInfo.global("oic").tokenUrl(TOKEN_URL).clientId("app").signingKey(rsa)
+                .signingAlgorithm("RS256").build();
+        TestJwt jwt = TestJwt.parse(JwtAssertion.clientAssertion(oic, TOKEN_URL, NOW));
+        assertEquals("RS256", jwt.header.get("alg"));
+        assertTrue(jwt.verifies(rsa.getCertificateChain().get(0).getPublicKey()));
+
+        ClientKey ec = Fixtures.selfSignedEc();
+        ClientInfo okta = ClientInfo.global("okta").tokenUrl(TOKEN_URL).clientId("app").signingKey(ec)
+                .signingAlgorithm("ES256").build();
+        TestJwt signed = TestJwt.parse(JwtAssertion.clientAssertion(okta, TOKEN_URL, NOW));
+        assertEquals("ES256", signed.header.get("alg"));
+        assertTrue(signed.verifies(ec.getCertificateChain().get(0).getPublicKey()));
+    }
+
+    @Test
     void everyAssertionHasItsOwnJti() {
         ClientInfo info = ClientInfo.global("okta").tokenUrl(TOKEN_URL).clientId("app").signingKey(Fixtures.rsaKey()).build();
         Object first = TestJwt.parse(JwtAssertion.clientAssertion(info, TOKEN_URL, NOW)).claims.get("jti");
@@ -99,6 +135,10 @@ class JwtAssertionTest {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> ClientInfo.global("okta")
                 .tokenUrl(TOKEN_URL).clientId("app").signingKey(weak).build());
         assertTrue(e.getMessage().contains("signingKey can't sign: RSA key has 1024 bits; at least 2048"), e.getMessage());
+        // the key's own problem, not a second one about the algorithm asked for
+        String m = assertThrows(IllegalArgumentException.class, () -> ClientInfo.global("okta")
+                .tokenUrl(TOKEN_URL).clientId("app").signingKey(weak).signingAlgorithm("PS256").build()).getMessage();
+        assertTrue(m.contains("signingKey can't sign") && !m.contains("signingAlgorithm"), m);
     }
 
     @Test

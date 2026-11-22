@@ -35,7 +35,8 @@ The core is generic: it implements the standards (RFC 6749, 7523, 8705) and hand
 | Introspection (RFC 7662) | Planned | For tokens that carry no expiry (Salesforce); until then such a token is kept until the service answers 401. |
 | Metadata discovery (RFC 8414, OpenID Connect) | Done | `issuer` or `metadataUrl` instead of `tokenUrl`; the token endpoint (or its mutual TLS alias) and the listed secret method come from the server's metadata, kept for a day. |
 | Vendor add-on libraries | Planned | See [PROGRESS.md](../PROGRESS.md). |
-| DPoP, PS256 signing | Parked | Not planned yet. |
+| PS256 signing | Done | `ClientInfo.signingAlgorithm("PS256")` for RSA keys, as Entra ID recommends; RS256 stays the default. |
+| DPoP | Parked | Not planned yet. |
 
 ## How the pieces fit
 
@@ -50,7 +51,7 @@ Your service --(ClientInfo)--> OAuthServiceClient ------- Bearer token, TLS ----
                                         | on a miss
                                         v
    JwtAssertion, Jws  <---------   TokenClient          form + client authentication
-   (RS256, ES256/384/512)               |
+   (RS256, PS256, ES256/384/512)        |
                                         v
    Tls (client certificate) <---   HttpExecutor -> UrlConnectionTransport ---POST, TLS---> token endpoint
                                    (https only, safe retries, deadline)
@@ -194,7 +195,7 @@ Both the JWT bearer grant and `private_key_jwt` use a JWT signed with the `signi
 
 | Part | Value |
 |---|---|
-| `alg` | RS256 for RSA keys; ES256, ES384 or ES512 by the EC key's curve. There is no setting yet. |
+| `alg` | RS256 for RSA keys unless `signingAlgorithm("PS256")` asks for PS256 (RSASSA-PSS with SHA-256, MGF1 and a 32-byte salt), which Entra ID recommends; ES256, ES384 or ES512 by the EC key's curve, which `signingAlgorithm` may name but not change. |
 | `typ` | `JWT` |
 | `kid` | The key ID, when the `ClientKey` has one (`withKeyId`). |
 | `x5t#S256`, `x5t` | SHA-256 and SHA-1 thumbprints of the certificate, when the key has one (Entra ID, Oracle Identity). |
@@ -394,7 +395,7 @@ ClientInfo.global("bank")
 ## Planned and out of scope
 
 - **1.0.0:** on Maven Central as `1.0.0` (Java 21) and `1.0.0-jdk8` (Java 8 to 20). [CHANGELOG.md](../CHANGELOG.md) lists what it holds and its known limitations. Later versions are published to `https://repo.primelogiclab.io/releases` instead.
-- **After the basics:** PS256 signing, connection reuse, then vendor add-on libraries on top of the core, with Salesforce's token introspection (RFC 7662) in its add-on. Refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body) is noted as an idea, not planned.
+- **After the basics:** connection reuse, then vendor add-on libraries on top of the core, with Salesforce's token introspection (RFC 7662) in its add-on. Refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body) is noted as an idea, not planned.
 - **Unverified:** whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.
 - **Out of scope:** sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.
 

@@ -626,6 +626,42 @@ class ClientInfoTest {
     }
 
     @Test
+    void theSigningAlgorithmMustFitTheKey() {
+        assertNull(signingClient().build().getSigningAlgorithm());
+        assertNull(signingClient().signingAlgorithm(" ").build().getSigningAlgorithm());
+        assertEquals("PS256", signingClient().signingAlgorithm(" PS256 ").build().getSigningAlgorithm());
+        assertEquals("RS256", signingClient().signingAlgorithm("RS256").build().getSigningAlgorithm());
+        ClientInfo.Builder ec = ClientInfo.global("okta").tokenUrl(TOKEN_URL).clientId("client")
+                .signingKey(Fixtures.selfSignedEc());
+        assertEquals("ES256", ec.signingAlgorithm("ES256").build().getSigningAlgorithm());
+
+        String names = "is not one of RS256, PS256, ES256, ES384, ES512";
+        assertProblem(signingClient().signingAlgorithm("ps256"), "signingAlgorithm 'ps256' " + names);
+        assertProblem(signingClient().signingAlgorithm("HS256"), "signingAlgorithm 'HS256' " + names);
+        assertProblem(signingClient().signingAlgorithm("ES256"), "signingAlgorithm ES256 needs an EC key; an RSA key signs RS256 or PS256");
+        assertProblem(ec.signingAlgorithm("ES384"), "signingAlgorithm ES384 doesn't fit this EC key, which signs ES256");
+        assertProblem(ec.signingAlgorithm("PS256"), "signingAlgorithm PS256 doesn't fit this EC key, which signs ES256");
+        assertProblem(secretClient().signingAlgorithm("PS256"), "signingAlgorithm is only used with a signingKey");
+        assertProblem(secretClient().signingAlgorithm("none"), "signingAlgorithm 'none' " + names);
+        // something else pasted here isn't echoed: it may be a secret
+        String m = assertThrows(IllegalArgumentException.class,
+                () -> signingClient().signingAlgorithm("s3cr3t-value-from-the-vault").build()).getMessage();
+        assertTrue(m.contains("signingAlgorithm (not shown) " + names) && !m.contains("s3cr3t"), m);
+    }
+
+    @Test
+    void theSigningAlgorithmIsShownAndCountsAsACredentialNotATokenSetting() {
+        ClientInfo rs = signingClient().build();
+        ClientInfo ps = signingClient().signingAlgorithm("PS256").build();
+        assertTrue(ps.toString().contains(", signingAlgorithm=PS256"), ps.toString());
+        assertFalse(rs.toString().contains("signingAlgorithm"), rs.toString());
+        // the token grants the same either way, so it's reused; a failure with one is no reason to wait with the other
+        assertEquals(rs.tokenSettings(), ps.tokenSettings());
+        assertFalse(rs.credentialsFingerprint().equals(ps.credentialsFingerprint()));
+        assertEquals(ps.credentialsFingerprint(), signingClient().signingAlgorithm("PS256").build().credentialsFingerprint());
+    }
+
+    @Test
     void theCredentialsFingerprintChangesWithTheCredentialsOnly() {
         String secret = secretClient().build().credentialsFingerprint();
         assertEquals(secret, secretClient().build().credentialsFingerprint()); // the same values built again

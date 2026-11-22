@@ -9,6 +9,8 @@ import java.security.interfaces.ECKey;
 import java.security.interfaces.RSAKey;
 import java.security.spec.ECGenParameterSpec;
 import java.security.spec.ECParameterSpec;
+import java.security.spec.MGF1ParameterSpec;
+import java.security.spec.PSSParameterSpec;
 
 /** JWS signing on top of the JDK's JCA providers (the signing half of oauth-connector's Jws). */
 final class Jws {
@@ -16,9 +18,13 @@ final class Jws {
     /** Smallest RSA key accepted for signing. */
     static final int MIN_RSA_KEY_BITS = 2048;
 
-    /** The algorithms the library signs with: RS256 for RSA keys, ES256/384/512 by the EC key's curve. */
+    /**
+     * The algorithms the library signs with: RS256 for RSA keys unless PS256 is asked for, ES256/384/512 by
+     * the EC key's curve.
+     */
     enum Alg {
-        RS256("SHA256withRSA", 0), ES256("SHA256withECDSA", 32), ES384("SHA384withECDSA", 48), ES512("SHA512withECDSA", 66);
+        RS256("SHA256withRSA", 0), PS256("RSASSA-PSS", 0),
+        ES256("SHA256withECDSA", 32), ES384("SHA384withECDSA", 48), ES512("SHA512withECDSA", 66);
 
         final String jcaName;
         final int ecCoordinateSize;
@@ -33,20 +39,74 @@ final class Jws {
         }
     }
 
+    /** PS256's parameters (RFC 7518 section 3.5): SHA-256, MGF1 with SHA-256, a salt as long as the hash. */
+    private static final PSSParameterSpec PS256_PARAMETERS =
+            new PSSParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, 32, 1);
+
     private Jws() {
     }
 
     /**
-     * The algorithm for {@code key}: RS256 for RSA, ES256, ES384 or ES512 for an EC key on P-256, P-384 or P-521.
+     * The algorithm for {@code key}: the one asked for, else RS256 for RSA, ES256, ES384 or ES512 for an EC
+     * key on P-256, P-384 or P-521.
      *
-     * @throws IllegalArgumentException with {@link #signingKeyProblem(PrivateKey)}'s reason
+     * @param requested a JWS name, or {@code null} to go by the key
+     * @throws IllegalArgumentException with {@link #signingKeyProblem(PrivateKey)}'s or {@link
+     *                                  #requestedAlgorithmProblem(String, PrivateKey)}'s reason
      */
-    static Alg algorithmFor(PrivateKey key) {
+    static Alg algorithmFor(PrivateKey key, String requested) {
         String problem = signingKeyProblem(key);
+        if (problem == null) {
+            problem = requestedAlgorithmProblem(requested, key);
+        }
         if (problem != null) {
             throw new IllegalArgumentException(problem);
         }
+        if (requested != null) {
+            return Alg.valueOf(requested);
+        }
         return key instanceof ECKey ? ecAlgorithm(((ECKey) key).getParams()) : Alg.RS256;
+    }
+
+    /**
+     * Why {@code key} can't sign with the algorithm asked for, or {@code null} if it can or none is asked
+     * for: RS256 or PS256 with an RSA key, the curve's ES algorithm with an EC key, and PS256 only where the
+     * Java runtime has RSASSA-PSS. A key {@link #signingKeyProblem(PrivateKey) that can't sign} isn't
+     * reported again here.
+     */
+    static String requestedAlgorithmProblem(String requested, PrivateKey key) {
+        if (requested == null) {
+            return null;
+        }
+        Alg alg = null;
+        for (Alg a : Alg.values()) {
+            if (a.name().equals(requested)) {
+                alg = a;
+            }
+        }
+        if (alg == null) {
+            // shown only when it looks like an algorithm name: a value pasted into the wrong setting may be a secret
+            String shown = requested.matches("[A-Za-z0-9_-]{1,16}") ? "'" + requested + "'" : "(not shown)";
+            return shown + " is not one of RS256, PS256, ES256, ES384, ES512";
+        }
+        if (key == null || signingKeyProblem(key) != null) {
+            return null;
+        }
+        if (key instanceof ECKey) {
+            Alg byCurve = ecAlgorithm(((ECKey) key).getParams());
+            return alg == byCurve ? null : requested + " doesn't fit this EC key, which signs " + byCurve;
+        }
+        if (alg.isEc()) {
+            return requested + " needs an EC key; an RSA key signs RS256 or PS256";
+        }
+        if (alg == Alg.PS256) {
+            try {
+                Signature.getInstance(alg.jcaName);
+            } catch (NoSuchAlgorithmException e) {
+                return "PS256 needs RSASSA-PSS, which this Java runtime doesn't have";
+            }
+        }
+        return null;
     }
 
     /**
@@ -81,6 +141,10 @@ final class Jws {
             throw new NoSuchAlgorithmException(alg + " is not supported by this Java runtime", e);
         }
         sig.initSign(key);
+        if (alg == Alg.PS256) {
+            // after initSign, so the parameters reach the provider the key chose (an HSM, the Windows store)
+            sig.setParameter(PS256_PARAMETERS);
+        }
         sig.update(input);
         byte[] raw = sig.sign();
         if (!alg.isEc()) {

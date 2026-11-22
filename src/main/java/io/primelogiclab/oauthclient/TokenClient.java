@@ -83,10 +83,10 @@ final class TokenClient implements TokenFetcher {
                     return request.notResendable().withMaxResponseBytes(MAX_RESPONSE_BYTES);
                 }
             }, HttpExecutor.Retry.IF_NOT_PROCESSED);
-            return parse(response, sentAt[0], sent);
+            return parse(response, sentAt[0], sent, clock);
         } catch (OAuthServiceException e) {
             throw new OAuthServiceException("Token request for " + info.label() + " failed: " + e.getMessage(),
-                    e.getError(), e.getErrorDescription(), e.getErrorUri(), e.getHttpStatus(), e);
+                    e.getError(), e.getErrorDescription(), e.getErrorUri(), e.getHttpStatus(), e.retryAfter(), e);
         }
     }
 
@@ -155,7 +155,7 @@ final class TokenClient implements TokenFetcher {
      *
      * @param sent the credentials sent, removed from any server text put in an exception
      */
-    private static AccessToken parse(HttpResponse response, Instant sentAt, List<String> sent) {
+    private static AccessToken parse(HttpResponse response, Instant sentAt, List<String> sent, Clock clock) {
         Map<String, Object> body = parseBody(response);
         if (!response.isSuccessful()) {
             if (body == null && response.getStatus() == 401) {
@@ -163,7 +163,7 @@ final class TokenClient implements TokenFetcher {
                 throw new OAuthServiceException("HTTP 401: invalid_client - client authentication failed",
                         "invalid_client", "client authentication failed", null, 401, null);
             }
-            throw errorFrom(response, body, sent);
+            throw errorFrom(response, body, sent, clock);
         }
         if (body == null || body.get("access_token") == null) {
             throw new OAuthServiceException("The token response has no access_token", "invalid_response", null, null,
@@ -181,8 +181,12 @@ final class TokenClient implements TokenFetcher {
         }
     }
 
-    /** The server's error; its text cleaned of the credentials sent, in case the server echoes the request. */
-    private static OAuthServiceException errorFrom(HttpResponse response, Map<String, Object> body, List<String> sent) {
+    /**
+     * The server's error; its text cleaned of the credentials sent, in case the server echoes the request.
+     * A 429 or 503 carries the server's Retry-After, so the token cache waits at least that long.
+     */
+    private static OAuthServiceException errorFrom(HttpResponse response, Map<String, Object> body, List<String> sent,
+                                                   Clock clock) {
         String error = body == null ? null : scrub(str(body.get("error")), sent);
         String description = body == null ? null : scrub(str(body.get("error_description")), sent);
         String uri = body == null ? null : scrub(str(body.get("error_uri")), sent);
@@ -196,7 +200,14 @@ final class TokenClient implements TokenFetcher {
             // cleaned before cutting, so a credential cut in half can't slip through
             msg.append(": ").append(Strings.safe(truncate(scrub(response.getBody(), sent))));
         }
-        return new OAuthServiceException(msg.toString(), error, description, uri, response.getStatus(), null);
+        Duration retryAfter = null;
+        if (response.getStatus() == 429 || response.getStatus() == 503) {
+            long ms = HttpExecutor.retryAfterMillis(response.header("Retry-After"), clock);
+            if (ms >= 0) {
+                retryAfter = Duration.ofMillis(Math.min(ms, ClientInfo.MAX_TOKEN_RETRY_DELAY_LIMIT.toMillis()));
+            }
+        }
+        return new OAuthServiceException(msg.toString(), error, description, uri, response.getStatus(), retryAfter, null);
     }
 
     /**

@@ -237,6 +237,11 @@ final class HttpExecutor {
      * to count, so a huge one can't overflow into "retry at once".
      */
     private long retryAfterMillis(String header) {
+        return retryAfterMillis(header, clock);
+    }
+
+    /** {@link #retryAfterMillis(String)} with the given clock for the HTTP-date form. */
+    static long retryAfterMillis(String header, Clock clock) {
         if (header == null) {
             return -1;
         }

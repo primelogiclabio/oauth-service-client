@@ -426,6 +426,31 @@ class TokenClientTest {
     }
 
     @Test
+    void aRetryAfterTooLongToWaitForIsHandedToTheCache() throws Exception {
+        StubServer server = server(false);
+        ClientInfo info = ClientInfo.global("vertex").tokenUrl(server.url("/token")).clientId("id").clientSecret(SECRET).build();
+
+        // over the 30 s a call may pause for: reported, with the pause for the token cache to honor
+        server.enqueue("/token", StubServer.json(429, "{\"error\":\"too_many_requests\"}").header("Retry-After", "120"));
+        OAuthServiceException seconds = assertThrows(OAuthServiceException.class, () -> client().fetch(info, NO_SCOPES));
+        assertEquals(429, seconds.getHttpStatus());
+        assertEquals(Duration.ofSeconds(120), seconds.retryAfter());
+
+        // a date, counted from the token client's clock, and no more than the 24 hours a wait may last
+        server.enqueue("/token", StubServer.json(503, "{}").header("Retry-After", "Fri, 01 Jan 2100 00:00:00 GMT"));
+        OAuthServiceException date = assertThrows(OAuthServiceException.class, () -> client().fetch(info, NO_SCOPES));
+        assertEquals(Duration.ofHours(24), date.retryAfter());
+
+        // only a busy server asks to come back
+        server.enqueue("/token", StubServer.json(400, "{\"error\":\"invalid_client\"}").header("Retry-After", "120"));
+        assertNull(assertThrows(OAuthServiceException.class, () -> client().fetch(info, NO_SCOPES)).retryAfter());
+        // and in a form that can be read (a 503 without one isn't resent, unlike a 429)
+        server.enqueue("/token", StubServer.json(503, "{}").header("Retry-After", "soon"));
+        assertNull(assertThrows(OAuthServiceException.class, () -> client().fetch(info, NO_SCOPES)).retryAfter());
+        assertEquals(4, server.requests().size());
+    }
+
+    @Test
     void debugLogsGetOnlyTheRequestsDescription() throws Exception {
         final List<Object> parameters = Collections.synchronizedList(new ArrayList<Object>());
         java.util.logging.Logger log = java.util.logging.Logger.getLogger(HttpExecutor.class.getName());

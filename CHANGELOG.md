@@ -4,6 +4,11 @@ All notable changes to this library. Versions follow [Semantic Versioning](https
 
 ## Unreleased
 
+### Added
+
+- **Waiting after a failed token request:** no other token request is sent for the same service, tenant, user and scopes for 5 seconds, doubled with each further failure in a row, up to 5 minutes. A token server's `Retry-After` (429, 503) makes the wait at least that long. Meanwhile calls get the cached token while it hasn't expired, else fail at once with the last failure's `OAuthServiceException` details, so a broken configuration doesn't use up a vendor's cap on token requests. A changed secret, key or setting is tried at once.
+- **`ClientInfo.Builder.maxTokenRetryDelay(Duration)`** sets that ceiling, from 0 (no waiting) to 24 hours. For Vertex (10 token requests per 8 hours), 1 hour.
+
 ### Changed
 
 - **Where releases are published:** from 1.1.0 on, both flavors go to `https://repo.primelogiclab.io/releases` (public, no login) instead of Maven Central. Add that repository to your build (see the README's Install section). 1.0.0 stays on Maven Central.

@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Arrays;
@@ -572,6 +573,47 @@ class ClientInfoTest {
         String s = info.toString();
         assertFalse(s.contains("\n") || s.contains("\r") || s.contains(" "), s);
         assertTrue(s.contains("idp/ac?me") && s.contains("subject=user?x"), s);
+    }
+
+    @Test
+    void maxTokenRetryDelayIsFiveMinutesUnlessSetWithinZeroToADay() {
+        assertEquals(Duration.ofMinutes(5), secretClient().build().getMaxTokenRetryDelay());
+        assertFalse(secretClient().build().toString().contains("maxTokenRetryDelay"));
+        ClientInfo vertex = secretClient().maxTokenRetryDelay(Duration.ofHours(1)).build();
+        assertEquals(Duration.ofHours(1), vertex.getMaxTokenRetryDelay());
+        assertTrue(vertex.toString().contains("maxTokenRetryDelay=PT1H"), vertex.toString());
+        assertEquals(Duration.ZERO, secretClient().maxTokenRetryDelay(Duration.ZERO).build().getMaxTokenRetryDelay());
+        assertEquals(Duration.ofHours(24), secretClient().maxTokenRetryDelay(Duration.ofHours(24)).build().getMaxTokenRetryDelay());
+        assertProblem(secretClient().maxTokenRetryDelay(null), "maxTokenRetryDelay must be 0 to 24 hours");
+        assertProblem(secretClient().maxTokenRetryDelay(Duration.ofSeconds(-1)), "maxTokenRetryDelay must be 0 to 24 hours");
+        assertProblem(secretClient().maxTokenRetryDelay(Duration.ofHours(24).plusNanos(1)), "maxTokenRetryDelay must be 0 to 24 hours");
+        // it says how long to wait, not what the token grants
+        assertEquals(secretClient().build().tokenSettings(), vertex.tokenSettings());
+    }
+
+    @Test
+    void theCredentialsFingerprintChangesWithTheCredentialsOnly() {
+        String secret = secretClient().build().credentialsFingerprint();
+        assertEquals(secret, secretClient().build().credentialsFingerprint()); // the same values built again
+        assertEquals(secret, secretClient().scope("other").attribute("note", "x").build().credentialsFingerprint());
+        assertFalse(secret.equals(secretClient().clientSecret("fixed").build().credentialsFingerprint()));
+        assertFalse(secretClient().build().toString().contains(secret));
+
+        // keys count by their material, so a key read again from the same PEM is the same credential
+        String signed = signingClient().build().credentialsFingerprint();
+        assertEquals(signed, signingClient().signingKey(Fixtures.rsaKey()).build().credentialsFingerprint());
+        assertFalse(signed.equals(signingClient().signingKey(Fixtures.rsaKey().withKeyId("k2")).build().credentialsFingerprint()));
+        assertFalse(signed.equals(signingClient().signingKey(Fixtures.clientWithChain()).build().credentialsFingerprint()));
+        assertFalse(signed.equals(signingClient().clientCertificate(Fixtures.clientWithChain()).build().credentialsFingerprint()));
+
+        ClientInfo.Builder refresh = secretClient().grant(Grant.REFRESH_TOKEN).subject("jane");
+        assertFalse(refresh.refreshToken("r1").build().credentialsFingerprint()
+                .equals(refresh.refreshToken("r2").build().credentialsFingerprint()));
+        // a secret in one place and a refresh token in the other don't collide
+        assertFalse(ClientInfo.global("idp").tokenUrl(TOKEN_URL).clientId("client").clientCertificate(Fixtures.clientWithChain())
+                .grant(Grant.REFRESH_TOKEN).subject("jane").refreshToken("secret").build().credentialsFingerprint()
+                .equals(ClientInfo.global("idp").tokenUrl(TOKEN_URL).clientId("client").clientSecret("secret")
+                        .clientCertificate(Fixtures.clientWithChain()).build().credentialsFingerprint()));
     }
 
     private static ClientInfo.Builder secretClient() {

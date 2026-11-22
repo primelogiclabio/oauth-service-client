@@ -7,6 +7,7 @@ import com.github.benmanes.caffeine.cache.Ticker;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
@@ -17,6 +18,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -31,6 +33,13 @@ import java.util.logging.Logger;
  *
  * <p>The renewing thread fetches on its own thread, so its timeouts and interrupts apply. Renewal isn't
  * done inside the Caffeine map's {@code compute}: a slow token request there would block other keys.
+ *
+ * <p>After a failed token request no other is sent for the key for {@link #FIRST_RETRY_DELAY}, doubled with
+ * each further failure in a row, up to the client info's {@link ClientInfo#getMaxTokenRetryDelay() ceiling},
+ * and at least as long as the token server's Retry-After within it; so a failure that won't fix itself
+ * doesn't use up a vendor's cap on token requests. Meanwhile callers get the current token while it hasn't
+ * expired, else the last failure at once. The wait holds only for the same token settings and credentials,
+ * so a fixed configuration is tried at once; a success ends it.
  */
 final class TokenCache {
 
@@ -41,12 +50,16 @@ final class TokenCache {
     static final Duration RENEWAL_MARGIN = Duration.ofMinutes(5);
     /** Most (service, tenant) entries kept; a bound on memory, far above the expected number. */
     static final long MAXIMUM_SIZE = 10000;
+    /** The wait after the first failed token request in a row; doubled for each further one. */
+    static final Duration FIRST_RETRY_DELAY = Duration.ofSeconds(5);
 
     private static final Logger LOG = Logger.getLogger(TokenCache.class.getName());
 
     private final Clock clock;
     private final Cache<Key, Entry> cache;
     private final ConcurrentMap<Key, Renewal> renewals = new ConcurrentHashMap<Key, Renewal>();
+    /** The last failed token request per key; dropped on success, and after the longest possible wait. */
+    private final Cache<Key, Failure> failures;
 
     TokenCache() {
         this(Clock.systemUTC(), Ticker.systemTicker(), null, MAXIMUM_SIZE);
@@ -60,6 +73,12 @@ final class TokenCache {
             builder.executor(executor);
         }
         this.cache = builder.expireAfter(new UntilTokenExpiry()).build();
+        Caffeine<Object, Object> failuresBuilder = Caffeine.newBuilder().ticker(ticker).maximumSize(maximumSize)
+                .expireAfterWrite(ClientInfo.MAX_TOKEN_RETRY_DELAY_LIMIT.toNanos(), TimeUnit.NANOSECONDS);
+        if (executor != null) {
+            failuresBuilder.executor(executor);
+        }
+        this.failures = failuresBuilder.build();
     }
 
     /** {@link #get(ClientInfo, List, TokenFetcher)} with the client info's default scopes. */
@@ -81,6 +100,13 @@ final class TokenCache {
             AccessToken current = cached(key, settings);
             if (current != null && isUsable(current)) {
                 return current;
+            }
+            Failure failure = coolingDown(key, clientInfo, settings);
+            if (failure != null) {
+                if (current != null && !isExpired(current)) {
+                    return current; // still good while no new one may be asked for
+                }
+                throw heldBack(key, failure);
             }
             Renewal mine = new Renewal(settings);
             Renewal running = renewals.putIfAbsent(key, mine);
@@ -123,6 +149,10 @@ final class TokenCache {
             if (current != null && !sameValue(current, rejected) && !isExpired(current)) {
                 return current;
             }
+            Failure failure = coolingDown(key, clientInfo, settings);
+            if (failure != null) {
+                throw heldBack(key, failure);
+            }
             Renewal mine = new Renewal(settings);
             Renewal running = renewals.putIfAbsent(key, mine);
             if (running == null) {
@@ -143,38 +173,111 @@ final class TokenCache {
 
     /**
      * Runs the renewal this thread claimed. If it fails while {@code fallback} hasn't expired, the
-     * fallback is returned and the failure logged; threads waiting on the renewal get the failure.
+     * fallback is returned and the failure logged; threads waiting on the renewal get the failure. A
+     * failed token request is recorded before the claim is released, so no other thread sends one meanwhile.
      */
     private AccessToken fetch(Key key, ClientInfo clientInfo, List<String> scopes, TokenFetcher fetcher,
                               Renewal mine, AccessToken fallback, AccessToken rejected) {
+        OAuthServiceException held = null;
         try {
-            // another renewal may have finished between the cache lookup and claiming this one
+            // another renewal may have finished, or failed, between the cache lookup and claiming this one
             AccessToken latest = cached(key, mine.settings);
             if (latest != null && isUsable(latest) && !sameValue(latest, rejected)) {
                 finish(key, mine, latest);
                 return latest;
+            }
+            Failure failure = coolingDown(key, clientInfo, mine.settings);
+            if (failure != null) {
+                held = heldBack(key, failure);
+                throw held;
             }
             AccessToken fresh = fetcher.fetch(clientInfo, scopes);
             if (fresh == null) {
                 throw new IllegalStateException("The token fetcher returned no token");
             }
             cache.put(key, new Entry(fresh, mine.settings));
+            failures.invalidate(key);
             finish(key, mine, fresh);
             return fresh;
         } catch (RuntimeException | Error e) {
+            boolean interrupted = Thread.currentThread().isInterrupted();
+            Failure recorded = null;
+            if (e != held && e instanceof OAuthServiceException && !interrupted) {
+                recorded = record(key, clientInfo, mine.settings, (OAuthServiceException) e);
+            }
             renewals.remove(key, mine);
-            if (Thread.currentThread().isInterrupted()) {
+            if (interrupted) {
                 mine.result.complete(null); // not the server's failure: the waiting threads try themselves
             } else {
                 mine.result.completeExceptionally(e);
             }
+            String next = recorded == null ? "" : "; no other request before " + recorded.until;
             if (e instanceof RuntimeException && fallback != null && !isExpired(fallback)) {
-                LOG.log(Level.WARNING, "Token renewal for {0} failed; using the current token until it expires at {1}: {2}",
-                        new Object[] {key, fallback.getExpiresAt(), describe(e)});
+                if (e != held) {
+                    LOG.log(Level.WARNING, "Token renewal for {0} failed; using the current token until it expires at {1}{2}: {3}",
+                            new Object[] {key, fallback.getExpiresAt(), next, describe(e)});
+                }
                 return fallback;
+            }
+            if (recorded != null) {
+                LOG.log(Level.WARNING, "Token request for {0} failed ({1} in a row){2}: {3}",
+                        new Object[] {key, recorded.count, next, describe(e)});
             }
             throw e;
         }
+    }
+
+    /**
+     * The failure {@code clientInfo} is still waiting out for {@code key}: recorded for the same token settings
+     * and credentials, with its wait not over; else {@code null}.
+     */
+    private Failure coolingDown(Key key, ClientInfo clientInfo, List<Object> settings) {
+        Failure failure = failures.getIfPresent(key);
+        if (failure == null || !clock.instant().isBefore(failure.until) || !failure.settings.equals(settings)
+                || !failure.fingerprint.equals(clientInfo.credentialsFingerprint())) {
+            return null;
+        }
+        return failure;
+    }
+
+    /**
+     * Records a failed token request: the wait is {@link #FIRST_RETRY_DELAY} doubled for each earlier failure
+     * in a row for the same settings and credentials, at least the server's Retry-After, at most the client
+     * info's ceiling. {@code null} when the client info turned the wait off.
+     */
+    private Failure record(Key key, ClientInfo clientInfo, List<Object> settings, OAuthServiceException e) {
+        Duration ceiling = clientInfo.getMaxTokenRetryDelay();
+        if (ceiling.isZero()) {
+            failures.invalidate(key);
+            return null;
+        }
+        String fingerprint = clientInfo.credentialsFingerprint();
+        Failure previous = failures.getIfPresent(key);
+        int count = previous != null && previous.settings.equals(settings) && previous.fingerprint.equals(fingerprint)
+                ? previous.count + 1 : 1;
+        Duration wait = retryDelay(count, ceiling);
+        if (e.retryAfter() != null && e.retryAfter().compareTo(wait) > 0) {
+            wait = e.retryAfter().compareTo(ceiling) > 0 ? ceiling : e.retryAfter();
+        }
+        Failure failure = new Failure(settings, fingerprint, e, count, clock.instant().plus(wait));
+        failures.put(key, failure);
+        return failure;
+    }
+
+    /** {@link #FIRST_RETRY_DELAY} doubled for each failure in a row after the first, at most {@code ceiling}. */
+    static Duration retryDelay(int failuresInARow, Duration ceiling) {
+        // 2^20 times 5 s is far beyond the 24-hour limit, and keeps the shift from overflowing
+        Duration wait = FIRST_RETRY_DELAY.multipliedBy(1L << Math.min(Math.max(failuresInARow - 1, 0), 20));
+        return wait.compareTo(ceiling) > 0 ? ceiling : wait;
+    }
+
+    /** The failure that holds back another token request, with its OAuth error, status and cause. */
+    private static OAuthServiceException heldBack(Key key, Failure failure) {
+        OAuthServiceException last = failure.last;
+        return new OAuthServiceException("No token request for " + key + " before " + failure.until + " after "
+                + (failure.count == 1 ? "a failed one" : failure.count + " failed ones in a row") + "; the last: "
+                + last.getMessage(), last.getError(), last.getErrorDescription(), last.getErrorUri(),
+                last.getHttpStatus(), last);
     }
 
     /** Out of the in-progress map first, so a woken waiter finds the cache updated, not this renewal again. */
@@ -333,6 +436,24 @@ final class TokenCache {
         Entry(AccessToken token, List<Object> settings) {
             this.token = token;
             this.settings = settings;
+        }
+    }
+
+    /** A failed token request: for which settings and credentials, how many in a row, and until when it holds. */
+    private static final class Failure {
+
+        final List<Object> settings;
+        final String fingerprint;
+        final OAuthServiceException last;
+        final int count;
+        final Instant until;
+
+        Failure(List<Object> settings, String fingerprint, OAuthServiceException last, int count, Instant until) {
+            this.settings = settings;
+            this.fingerprint = fingerprint;
+            this.last = last;
+            this.count = count;
+            this.until = until;
         }
     }
 

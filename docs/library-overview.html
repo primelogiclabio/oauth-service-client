@@ -178,6 +178,7 @@ main [id]{scroll-margin-top:64px}
         <ul>
           <li>It sends the token request for the configured <strong>grant</strong> (client credentials, JWT bearer or refresh token), with the right <strong>client authentication</strong>.</li>
           <li>It caches tokens per <strong>service, tenant, user and scope set</strong> and renews them 5 minutes before they expire, one renewal at a time.</li>
+          <li>After a failed token request it waits before asking again (5 s, doubling up to 5 minutes by default), so a broken configuration doesn't use up a vendor's cap on token requests.</li>
           <li>It sends your call to the service with the token attached and hands back every answer, whatever its status.</li>
           <li>It retries only when that is safe, and reports every failure as one exception type with the server's OAuth error.</li>
         </ul>
@@ -192,7 +193,7 @@ main [id]{scroll-margin-top:64px}
           <tbody>
             <tr><td><code>ClientInfo</code>, <code>ClientKey</code>, <code>Grant</code></td><td><span class="pill ok">Done</span></td><td>Public. Builder that reports every problem at once; secrets never printed.</td></tr>
             <tr><td>Token requests</td><td><span class="pill ok">Done</span></td><td>All three grants and five client authentication methods; tested against a stub server and a live Keycloak.</td></tr>
-            <tr><td>Token cache</td><td><span class="pill ok">Done</span></td><td>Per (service, tenant, user, scope set), on Caffeine (3.x in the Java 21 flavor, 2.9.3 in the Java 8 flavor).</td></tr>
+            <tr><td>Token cache</td><td><span class="pill ok">Done</span></td><td>Per (service, tenant, user, scope set), on Caffeine (3.x in the Java 21 flavor, 2.9.3 in the Java 8 flavor). Waits after failed token requests, up to <code>maxTokenRetryDelay</code>.</td></tr>
             <tr><td>Scopes passed by the app</td><td><span class="pill ok">Done</span></td><td>Replace the <code>ClientInfo</code> defaults for that token.</td></tr>
             <tr><td><code>OAuthServiceException</code></td><td><span class="pill ok">Done</span></td><td>Public.</td></tr>
             <tr><td><code>OAuthServiceClient</code>, <code>ServiceRequest</code>, <code>ServiceResponse</code></td><td><span class="pill ok">Done</span></td><td>Public. <code>get</code>, <code>post</code>, <code>put</code>, <code>patch</code>, <code>delete</code>, <code>request(ServiceRequest)</code> and <code>token()</code>; each call is sent once.</td></tr>
@@ -200,7 +201,7 @@ main [id]{scroll-margin-top:64px}
             <tr><td>PATCH</td><td><span class="pill ok">Done</span></td><td>Java 11 and later, through <code>java.net.http</code> under the same rules; a clear error on Java 8.</td></tr>
             <tr><td>Introspection (RFC 7662)</td><td><span class="pill todo">Planned</span></td><td>For tokens that carry no expiry (Salesforce); until then such a token is kept until the service answers 401.</td></tr>
             <tr><td>Metadata discovery (RFC 8414)</td><td><span class="pill todo">Planned</span></td><td>An issuer instead of an explicit token URL.</td></tr>
-            <tr><td>Refresh-token rotation write-back, cool-down after failures, vendor clients</td><td><span class="pill todo">Planned</span></td><td>See <a href="../PROGRESS.md">PROGRESS.md</a>.</td></tr>
+            <tr><td>Vendor clients</td><td><span class="pill todo">Planned</span></td><td>See <a href="../PROGRESS.md">PROGRESS.md</a>.</td></tr>
             <tr><td>DPoP, PS256 signing</td><td><span class="pill out">Parked</span></td><td>Not planned yet.</td></tr>
           </tbody>
         </table></div>
@@ -317,7 +318,7 @@ main [id]{scroll-margin-top:64px}
           <li><code>TokenClient</code> builds the form for the grant, adds client authentication, signs any assertion with a fresh <code>jti</code>, and attaches the client certificate if one is set.</li>
           <li><code>HttpExecutor</code> checks the URL is https and the headers are clean, then sends. It resends only when the server certainly didn't process the request.</li>
           <li>The answer is parsed (JSON, or form-encoded), checked, and turned into an <code>AccessToken</code> whose expiry comes from the JWT's <code>exp</code> or from <code>expires_in</code>.</li>
-          <li>The cache stores it and hands it to every waiting thread. If the request failed but the old token hasn't expired, the old token is used and the failure logged.</li>
+          <li>The cache stores it and hands it to every waiting thread. If the request failed but the old token hasn't expired, the old token is used and the failure logged. A failed request also starts a wait before the next one (see Token cache).</li>
         </ol>
       </section>
 
@@ -342,6 +343,7 @@ main [id]{scroll-margin-top:64px}
             <tr><td><code>tokenParameter(name, value)</code></td><td>optional</td><td>Extra form fields, e.g. <code>audience</code>. Names the library sets (<code>grant_type</code>, <code>scope</code>, <code>client_id</code>, …) are refused.</td></tr>
             <tr><td><code>attribute(name, value)</code></td><td>optional</td><td>The caller's own data (an account ID, a base URL); never sent.</td></tr>
             <tr><td><code>allowedHost(...)</code></td><td>optional, recommended</td><td>Hosts that calls with this token may go to: <code>api.example.com</code>, or <code>*.my.salesforce.com</code> for any host below that domain (not over an IP address). Without any, every https host is allowed. Keep wildcards narrow: <code>*.co.uk</code> or <code>*.azurewebsites.net</code> would let anyone with a site there receive the token.</td></tr>
+            <tr><td><code>maxTokenRetryDelay(duration)</code></td><td>optional</td><td>The longest wait between token requests after failures: 0 (no waiting) to 24 hours, 5 minutes by default. Raise it for a service that caps token requests (Vertex: 1 hour). Not part of what identifies a cached token.</td></tr>
           </tbody>
         </table></div>
         <p>Settings that don't fit the grant are refused rather than ignored: a <code>subject</code> with client credentials, a refresh token without one, a <code>refreshToken</code> outside the refresh grant, a secret and a signing key both used to authenticate the client, an expired certificate.</p>
@@ -456,6 +458,7 @@ grant_type=client_credentials&amp;scope=payroll-calculation&amp;audience=verx%3A
           <li><strong>Settings must match:</strong> a cached token is reused only while the settings that shape it are unchanged (token URL, grant, client ID, subject, audience, assertion claims, default scopes, token parameters, client certificate). A rotated secret, key or refresh token keeps it.</li>
           <li><strong>One renewal per key:</strong> through a map of in-flight renewals, not inside Caffeine's <code>compute</code>, so a slow token endpoint for one key never blocks others. Waiting threads share the new token or the failure.</li>
           <li><strong>Failures:</strong> if a renewal fails while the current token hasn't expired, the current token is returned and a warning logged.</li>
+          <li><strong>Waiting after a failure:</strong> after a failed token request, no other is sent for the key for 5 s, doubled with each further failure in a row (5, 10, 20, 40 s and so on), up to <code>maxTokenRetryDelay</code> (5 minutes by default). A 429 or 503 with <code>Retry-After</code> makes the wait at least that long, up to the same ceiling. Meanwhile callers get the current token while it hasn't expired; without one they get an <code>OAuthServiceException</code> at once, with the last failure's <code>error</code>, description and HTTP status, that failure as its cause, and the time of the next request in the message. <code>renew</code> after a 401 waits too. The wait holds only for the same token settings and credentials: a fixed secret, a new key or another setting is tried at once (credentials are compared by a SHA-256 fingerprint, never kept). A success ends the wait and starts the count again. An interrupted request starts no wait.</li>
           <li><strong>Unknown expiry:</strong> a token that says nothing about its expiry is kept until <code>renew</code> is called after a 401.</li>
           <li><strong>Bounds:</strong> at most 10,000 entries; expired entries are evicted (in buckets of about a second, so <code>size()</code> can lag while reads check expiry exactly).</li>
         </ul>
@@ -585,6 +588,7 @@ ClientInfo.forTenant("vertex", tenant)
         .clientId(clientId).clientSecret(secret)
         .tokenParameter("audience", "verx://migration-api")
         .scope("payroll-calculation")
+        .maxTokenRetryDelay(Duration.ofHours(1))  // Vertex allows 10 token requests per 8 hours
         .build();
 
 // Jira service account: secret in the form body
@@ -643,7 +647,7 @@ ClientInfo.global("bank")
         <h2 id="limits">Planned and out of scope</h2>
         <ul>
           <li><strong>1.0.0:</strong> on Maven Central as <code>1.0.0</code> (Java 21) and <code>1.0.0-jdk8</code> (Java 8 to 20). <a href="../CHANGELOG.md">CHANGELOG.md</a> lists what it holds and its known limitations. Later versions are published to <code>https://repo.primelogiclab.io/releases</code> instead.</li>
-          <li><strong>After the basics:</strong> refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body), a short cool-down after failed token requests, introspection, metadata discovery, and vendor clients on top of the core.</li>
+          <li><strong>After the basics:</strong> introspection, metadata discovery, and vendor clients on top of the core. Refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body) is noted as an idea, not planned.</li>
           <li><strong>Unverified:</strong> whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.</li>
           <li><strong>Out of scope:</strong> sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.</li>
         </ul>

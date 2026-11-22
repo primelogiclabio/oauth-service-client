@@ -414,7 +414,207 @@ class TokenCacheTest {
         assertEquals(2, calls.get());
     }
 
+    // ------------------------------------------------------------------ waiting after failed token requests
+
+    @Test
+    void afterAFailedRequestNoOtherIsSentForFiveSeconds() {
+        Failing failing = new Failing(401, null);
+        ClientInfo info = tenant("vertex", "acme");
+        OAuthServiceException first = assertThrows(OAuthServiceException.class, () -> cache.get(info, failing));
+        assertSame(failing.last, first);
+        time.advance(Duration.ofMillis(4999));
+
+        OAuthServiceException held = assertThrows(OAuthServiceException.class, () -> cache.get(info, failing));
+        assertEquals(1, failing.calls.get());
+        assertEquals("invalid_client", held.getError());
+        assertEquals("the secret is wrong", held.getErrorDescription());
+        assertEquals(401, held.getHttpStatus());
+        assertSame(first, held.getCause());
+        assertTrue(held.getMessage().contains("before 2026-11-14T10:00:05Z") && held.getMessage().contains("invalid_client"),
+                held.getMessage());
+
+        time.advance(Duration.ofMillis(1));
+        assertThrows(OAuthServiceException.class, () -> cache.get(info, failing));
+        assertEquals(2, failing.calls.get());
+    }
+
+    @Test
+    void eachFailureInARowDoublesTheWaitUpToFiveMinutes() {
+        Failing failing = new Failing(401, null);
+        ClientInfo info = tenant("vertex", "acme");
+        long[] waits = {5, 10, 20, 40, 80, 160, 300, 300};
+        for (int n = 0; n < waits.length; n++) {
+            assertThrows(OAuthServiceException.class, () -> cache.get(info, failing));
+            assertEquals(n + 1, failing.calls.get());
+            time.advance(Duration.ofSeconds(waits[n]).minusMillis(1));
+            assertThrows(OAuthServiceException.class, () -> cache.get(info, failing));
+            assertEquals(n + 1, failing.calls.get(), "held back during wait " + (n + 1));
+            time.advance(Duration.ofMillis(1));
+        }
+    }
+
+    @Test
+    void theWaitIsCappedAndCantOverflow() {
+        assertEquals(Duration.ofSeconds(5), TokenCache.retryDelay(1, Duration.ofHours(1)));
+        assertEquals(Duration.ofSeconds(2560), TokenCache.retryDelay(10, Duration.ofHours(1)));
+        assertEquals(Duration.ofHours(1), TokenCache.retryDelay(11, Duration.ofHours(1)));
+        assertEquals(Duration.ofHours(24), TokenCache.retryDelay(Integer.MAX_VALUE, Duration.ofHours(24)));
+        assertEquals(Duration.ofSeconds(1), TokenCache.retryDelay(1, Duration.ofSeconds(1)));
+    }
+
+    @Test
+    void theCurrentTokenIsServedWhileNoNewOneMayBeAskedFor() {
+        ClientInfo info = tenant("docusign", "acme");
+        AccessToken t1 = cache.get(info, new Fetcher(3600));
+        time.advance(Duration.ofSeconds(3500)); // inside the renewal margin
+        Failing failing = new Failing(503, null);
+        assertSame(t1, cache.get(info, failing)); // the renewal fails: the current token is still good
+        assertSame(t1, cache.get(info, failing));
+        assertEquals(1, failing.calls.get());
+        time.advance(Duration.ofSeconds(5));
+        assertSame(t1, cache.get(info, failing));
+        assertEquals(2, failing.calls.get());
+        time.advance(Duration.ofSeconds(95)); // t1 has expired; the 10 s wait is over too
+        assertThrows(OAuthServiceException.class, () -> cache.get(info, failing));
+        assertEquals(3, failing.calls.get());
+    }
+
+    @Test
+    void aSuccessEndsTheWaitAndTheCountStartsAgain() {
+        ClientInfo info = tenant("vertex", "acme");
+        Failing failing = new Failing(401, null);
+        assertThrows(OAuthServiceException.class, () -> cache.get(info, failing));
+        time.advance(Duration.ofSeconds(5));
+        assertThrows(OAuthServiceException.class, () -> cache.get(info, failing)); // the second in a row: 10 s
+        time.advance(Duration.ofSeconds(10));
+        assertEquals("t1", cache.get(info, new Fetcher(0)).getValue()); // no lifetime: asked for every time
+
+        assertThrows(OAuthServiceException.class, () -> cache.get(info, failing));
+        time.advance(Duration.ofSeconds(5)); // back to 5 s
+        assertThrows(OAuthServiceException.class, () -> cache.get(info, failing));
+        assertEquals(4, failing.calls.get());
+    }
+
+    @Test
+    void changedCredentialsOrSettingsAreTriedAtOnce() {
+        Failing failing = new Failing(401, null);
+        assertThrows(OAuthServiceException.class, () -> cache.get(tenant("vertex", "acme"), failing));
+        // the same values built again are held back
+        assertThrows(OAuthServiceException.class, () -> cache.get(tenant("vertex", "acme"), failing));
+        assertEquals(1, failing.calls.get());
+        // another secret is tried at once
+        ClientInfo fixed = base(ClientInfo.forTenant("vertex", "acme")).clientSecret("fixed").build();
+        assertThrows(OAuthServiceException.class, () -> cache.get(fixed, failing));
+        assertEquals(2, failing.calls.get());
+        // and so are other token settings
+        assertThrows(OAuthServiceException.class, () -> cache.get(base(ClientInfo.forTenant("vertex", "acme"))
+                .tokenParameter("audience", "verx://migration-api").build(), failing));
+        assertEquals(3, failing.calls.get());
+        // a fixed secret's token then serves the old client info too, which shares its settings
+        assertEquals("t1", cache.get(fixed, new Fetcher(3600)).getValue());
+        assertEquals("t1", cache.get(tenant("vertex", "acme"), failing).getValue());
+        assertEquals(3, failing.calls.get());
+    }
+
+    @Test
+    void aKeyReadAgainFromTheSamePemIsHeldBackButAnotherKeyIsTried() {
+        Failing failing = new Failing(400, null);
+        ClientInfo.Builder okta = ClientInfo.global("okta").tokenUrl("https://idp.example.com/token").clientId("client");
+        assertThrows(OAuthServiceException.class, () -> cache.get(okta.signingKey(Fixtures.rsaKey()).build(), failing));
+        assertThrows(OAuthServiceException.class, () -> cache.get(okta.signingKey(Fixtures.rsaKey()).build(), failing));
+        assertEquals(1, failing.calls.get());
+        assertThrows(OAuthServiceException.class, () -> cache.get(okta.signingKey(Fixtures.clientWithChain()).build(), failing));
+        assertEquals(2, failing.calls.get());
+    }
+
+    @Test
+    void retryAfterLengthensTheWaitWithinTheCeiling() {
+        ClientInfo info = tenant("vertex", "acme");
+        Failing busy = new Failing(429, Duration.ofSeconds(120));
+        assertThrows(OAuthServiceException.class, () -> cache.get(info, busy));
+        time.advance(Duration.ofSeconds(119));
+        assertThrows(OAuthServiceException.class, () -> cache.get(info, busy));
+        assertEquals(1, busy.calls.get());
+        time.advance(Duration.ofSeconds(1));
+        assertThrows(OAuthServiceException.class, () -> cache.get(info, busy));
+        assertEquals(2, busy.calls.get());
+
+        ClientInfo capped = tenant("vertex", "globex");
+        Failing longer = new Failing(429, Duration.ofHours(2));
+        assertThrows(OAuthServiceException.class, () -> cache.get(capped, longer));
+        time.advance(Duration.ofMinutes(5)); // the ceiling, not the two hours asked for
+        assertThrows(OAuthServiceException.class, () -> cache.get(capped, longer));
+        assertEquals(2, longer.calls.get());
+    }
+
+    @Test
+    void theCeilingComesFromTheClientInfoAndZeroTurnsTheWaitOff() {
+        ClientInfo vertex = base(ClientInfo.forTenant("vertex", "acme")).maxTokenRetryDelay(Duration.ofHours(1)).build();
+        Failing longer = new Failing(429, Duration.ofHours(2));
+        assertThrows(OAuthServiceException.class, () -> cache.get(vertex, longer));
+        time.advance(Duration.ofMinutes(59));
+        assertThrows(OAuthServiceException.class, () -> cache.get(vertex, longer));
+        assertEquals(1, longer.calls.get());
+        time.advance(Duration.ofMinutes(1));
+        assertThrows(OAuthServiceException.class, () -> cache.get(vertex, longer));
+        assertEquals(2, longer.calls.get());
+
+        ClientInfo off = base(ClientInfo.forTenant("docusign", "acme")).maxTokenRetryDelay(Duration.ZERO).build();
+        Failing failing = new Failing(401, null);
+        assertThrows(OAuthServiceException.class, () -> cache.get(off, failing));
+        assertThrows(OAuthServiceException.class, () -> cache.get(off, failing));
+        assertEquals(2, failing.calls.get());
+    }
+
+    @Test
+    void anInterruptedRequestStartsNoWait() {
+        ClientInfo info = tenant("docusign", "acme");
+        TokenFetcher interrupted = (i, scopes) -> {
+            Thread.currentThread().interrupt();
+            throw new OAuthServiceException("Token request interrupted");
+        };
+        assertThrows(OAuthServiceException.class, () -> cache.get(info, interrupted));
+        assertTrue(Thread.interrupted()); // and clears the flag
+        assertEquals("t1", cache.get(info, new Fetcher(3600)).getValue());
+    }
+
+    @Test
+    void renewAfterARejectionWaitsToo() {
+        ClientInfo info = tenant("docusign", "acme");
+        Fetcher fetcher = new Fetcher(3600);
+        AccessToken t1 = cache.get(info, fetcher);
+        Failing failing = new Failing(401, null);
+        assertThrows(OAuthServiceException.class, () -> cache.renew(info, t1, failing));
+        assertThrows(OAuthServiceException.class, () -> cache.renew(info, t1, failing));
+        assertThrows(OAuthServiceException.class, () -> cache.get(info, failing));
+        assertEquals(1, failing.calls.get());
+        time.advance(Duration.ofSeconds(5));
+        assertEquals("t2", cache.renew(info, t1, fetcher).getValue());
+    }
+
     // ------------------------------------------------------------------ helpers
+
+    /** Fails every token request with an OAuth error, as TokenClient does. */
+    private static final class Failing implements TokenFetcher {
+
+        final AtomicInteger calls = new AtomicInteger();
+        volatile OAuthServiceException last;
+        private final int status;
+        private final Duration retryAfter;
+
+        Failing(int status, Duration retryAfter) {
+            this.status = status;
+            this.retryAfter = retryAfter;
+        }
+
+        @Override
+        public AccessToken fetch(ClientInfo clientInfo, List<String> scopes) {
+            calls.incrementAndGet();
+            last = new OAuthServiceException("Token request failed: HTTP " + status + ": invalid_client",
+                    "invalid_client", "the secret is wrong", null, status, retryAfter, null);
+            throw last;
+        }
+    }
 
     private static ClientInfo tenant(String service, String tenant) {
         return base(ClientInfo.forTenant(service, tenant)).build();

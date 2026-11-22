@@ -450,6 +450,106 @@ class TokenClientTest {
         assertEquals(4, server.requests().size());
     }
 
+    // ------------------------------------------------------------------ the token endpoint from server metadata
+
+    @Test
+    void theTokenEndpointComesFromTheServersMetadataReadOnce() throws Exception {
+        StubServer server = server(false);
+        String issuer = server.url("/idp");
+        server.always("/idp/.well-known/openid-configuration", MetadataCacheTest.document(issuer, server.url("/idp/token")));
+        server.always("/idp/token", StubServer.token("tok", 3600));
+        ClientInfo info = ClientInfo.global("okta").issuer(issuer).clientId("app").signingKey(Fixtures.rsaKey()).build();
+
+        assertEquals("tok", client().fetch(info, NO_SCOPES).getValue());
+        client().fetch(info, NO_SCOPES);
+
+        assertEquals(Arrays.asList("/idp/.well-known/openid-configuration", "/idp/token", "/idp/token"), paths(server));
+        // a client assertion's audience is the endpoint it goes to
+        assertEquals(server.url("/idp/token"), TestJwt.parse(server.last().param("client_assertion")).claims.get("aud"));
+    }
+
+    @Test
+    void aClientWithACertificateUsesTheMutualTlsAlias() throws Exception {
+        StubServer meta = server(false);
+        StubServer mtls = server(true);
+        String issuer = meta.url("/idp");
+        meta.always("/idp/.well-known/openid-configuration", StubServer.json(200, "{\"issuer\":\"" + issuer
+                + "\",\"token_endpoint\":\"" + meta.url("/idp/token") + "\",\"mtls_endpoint_aliases\":{\"token_endpoint\":\""
+                + mtls.url("/idp/mtls/token") + "\"}}"));
+        mtls.always("/idp/mtls/token", StubServer.token("bound", 3600));
+        ClientInfo info = ClientInfo.global("auth0").issuer(issuer).clientId("app")
+                .clientCertificate(Fixtures.clientWithChain()).build();
+
+        assertEquals("bound", client().fetch(info, NO_SCOPES).getValue());
+
+        assertEquals(Arrays.asList("/idp/mtls/token"), paths(mtls));
+        assertEquals("app", mtls.last().param("client_id"));
+        assertEquals(Arrays.asList("/idp/.well-known/openid-configuration"), paths(meta)); // nothing else goes there
+
+        // a client without a certificate stays on the plain endpoint
+        meta.always("/idp/token", StubServer.token("plain", 3600));
+        assertEquals("plain", client().fetch(ClientInfo.global("auth0").issuer(issuer).clientId("app")
+                .clientSecret(SECRET).build(), NO_SCOPES).getValue());
+    }
+
+    @Test
+    void theSecretGoesWhereTheServerSaysItTakesIt() throws Exception {
+        StubServer server = server(false);
+        String postOnly = server.url("/post");
+        server.always("/post/.well-known/openid-configuration", StubServer.json(200, "{\"issuer\":\"" + postOnly
+                + "\",\"token_endpoint\":\"" + server.url("/post/token")
+                + "\",\"token_endpoint_auth_methods_supported\":[\"client_secret_post\",\"private_key_jwt\"]}"));
+        server.always("/post/token", StubServer.token("tok", 3600));
+        client().fetch(ClientInfo.global("svc").issuer(postOnly).clientId("id").clientSecret(SECRET).build(), NO_SCOPES);
+        assertEquals(SECRET, server.last().param("client_secret"));
+        assertEquals(null, server.last().header("Authorization"));
+
+        String basicOnly = server.url("/basic");
+        server.always("/basic/.well-known/openid-configuration", StubServer.json(200, "{\"issuer\":\"" + basicOnly
+                + "\",\"token_endpoint\":\"" + server.url("/basic/token")
+                + "\",\"token_endpoint_auth_methods_supported\":[\"client_secret_basic\"]}"));
+        server.always("/basic/token", StubServer.token("tok", 3600));
+        client().fetch(ClientInfo.global("svc").issuer(basicOnly).clientId("id").clientSecret(SECRET)
+                .clientSecretInBody(true).build(), NO_SCOPES);
+        assertTrue(basicCredentials(server.last()).endsWith(":" + TokenClient.formEncode(SECRET)));
+        assertNull(server.last().param("client_secret"));
+    }
+
+    @Test
+    void onlyTheTwoSecretMethodsAreAdaptedToWhatTheServerLists() {
+        List<String> postOnly = Arrays.asList("client_secret_post");
+        assertEquals(ClientInfo.ClientAuthentication.CLIENT_SECRET_POST,
+                TokenClient.listedAuthentication(ClientInfo.ClientAuthentication.CLIENT_SECRET_BASIC, postOnly));
+        // a server that lists nothing gets what is configured, as does one that lists neither secret method
+        assertEquals(ClientInfo.ClientAuthentication.CLIENT_SECRET_BASIC, TokenClient.listedAuthentication(
+                ClientInfo.ClientAuthentication.CLIENT_SECRET_BASIC, Collections.<String>emptyList()));
+        assertEquals(ClientInfo.ClientAuthentication.CLIENT_SECRET_BASIC, TokenClient.listedAuthentication(
+                ClientInfo.ClientAuthentication.CLIENT_SECRET_BASIC, Arrays.asList("private_key_jwt")));
+        for (ClientInfo.ClientAuthentication other : Arrays.asList(ClientInfo.ClientAuthentication.PRIVATE_KEY_JWT,
+                ClientInfo.ClientAuthentication.MUTUAL_TLS, ClientInfo.ClientAuthentication.NONE)) {
+            assertEquals(other, TokenClient.listedAuthentication(other, postOnly));
+        }
+    }
+
+    @Test
+    void aTokenUrlNeverReadsMetadata() throws Exception {
+        StubServer server = server(false);
+        server.always("/token", StubServer.token("tok", 3600));
+        client().fetch(ClientInfo.global("svc").tokenUrl(server.url("/token")).clientId("id").clientSecret(SECRET).build(),
+                NO_SCOPES);
+        assertEquals(Arrays.asList("/token"), paths(server));
+    }
+
+    @Test
+    void aMetadataFailureIsAFailedTokenRequest() throws Exception {
+        StubServer server = server(false); // nothing at the well-known locations
+        OAuthServiceException e = assertThrows(OAuthServiceException.class, () -> client().fetch(ClientInfo.global("svc")
+                .issuer(server.url("/idp")).clientId("id").clientSecret(SECRET).build(), NO_SCOPES));
+        assertTrue(e.getMessage().startsWith("Token request for svc (global) failed: Couldn't read the authorization "
+                + "server metadata"), e.getMessage());
+        assertEquals(3, server.requests().size());
+    }
+
     @Test
     void debugLogsGetOnlyTheRequestsDescription() throws Exception {
         final List<Object> parameters = Collections.synchronizedList(new ArrayList<Object>());
@@ -505,7 +605,17 @@ class TokenClientTest {
     }
 
     private TokenClient client() {
-        return new TokenClient(executor(), time);
+        return new TokenClient(executor(), time, metadata);
+    }
+
+    private final MetadataCache metadata = new MetadataCache(time);
+
+    private static List<String> paths(StubServer server) {
+        List<String> out = new ArrayList<String>();
+        for (StubServer.Recorded r : server.requests()) {
+            out.add(r.path);
+        }
+        return out;
     }
 
     /** The decoded {@code id:secret} of a Basic header, still form-encoded as sent. */

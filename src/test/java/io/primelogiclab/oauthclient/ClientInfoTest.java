@@ -576,6 +576,40 @@ class ClientInfoTest {
     }
 
     @Test
+    void theTokenEndpointIsSetOrReadFromTheServersMetadata() {
+        ClientInfo byIssuer = noEndpoint().issuer(" https://login.example.com/tenant/v2.0 ").build();
+        assertNull(byIssuer.getTokenUrl());
+        assertEquals("https://login.example.com/tenant/v2.0", byIssuer.getIssuer());
+        assertTrue(byIssuer.toString().contains("issuer=https://login.example.com/tenant/v2.0")
+                && !byIssuer.toString().contains("tokenUrl"), byIssuer.toString());
+        ClientInfo byDocument = noEndpoint().metadataUrl("https://idp.example.com/meta.json?key=private").build();
+        assertEquals("https://idp.example.com/meta.json?key=private", byDocument.getMetadataUrl());
+        assertTrue(byDocument.toString().contains("metadataUrl=https://idp.example.com/meta.json")
+                && !byDocument.toString().contains("private"), byDocument.toString());
+        assertEquals("https://idp.example.com", noEndpoint().issuer("https://idp.example.com")
+                .metadataUrl("https://idp.example.com/m").build().getIssuer());
+
+        assertProblem(noEndpoint(), "tokenUrl is required (or issuer or metadataUrl");
+        assertProblem(noEndpoint().tokenUrl(TOKEN_URL).issuer("https://idp.example.com"),
+                "set tokenUrl, or issuer and/or metadataUrl to read it from the server's metadata, not both");
+        assertProblem(noEndpoint().tokenUrl(TOKEN_URL).metadataUrl("https://idp.example.com/m"), "not both");
+        assertProblem(noEndpoint().issuer("http://idp.example.com"), "issuer must be an https URL");
+        assertProblem(noEndpoint().issuer("https://idp.example.com?tenant=1"), "issuer must not have a query");
+        assertProblem(noEndpoint().issuer("https://idp.example.com#x"), "issuer must not have a fragment");
+        assertProblem(noEndpoint().metadataUrl("https://u@idp.example.com/m"), "metadataUrl must not contain user info");
+
+        // how the endpoint is found is part of what identifies a cached token
+        assertFalse(noEndpoint().issuer("https://a.example.com").build().tokenSettings()
+                .equals(noEndpoint().issuer("https://b.example.com").build().tokenSettings()));
+        assertFalse(noEndpoint().issuer("https://a.example.com").build().tokenSettings()
+                .equals(noEndpoint().metadataUrl("https://a.example.com").build().tokenSettings()));
+    }
+
+    private static ClientInfo.Builder noEndpoint() {
+        return ClientInfo.global("idp").clientId("client").clientSecret("secret");
+    }
+
+    @Test
     void maxTokenRetryDelayIsFiveMinutesUnlessSetWithinZeroToADay() {
         assertEquals(Duration.ofMinutes(5), secretClient().build().getMaxTokenRetryDelay());
         assertFalse(secretClient().build().toString().contains("maxTokenRetryDelay"));

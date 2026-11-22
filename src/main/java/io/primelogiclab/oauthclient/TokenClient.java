@@ -45,10 +45,17 @@ final class TokenClient implements TokenFetcher {
 
     private final HttpExecutor http;
     private final Clock clock;
+    private final MetadataCache metadata;
 
+    /** With the JVM-wide server metadata. */
     TokenClient(HttpExecutor http, Clock clock) {
+        this(http, clock, MetadataCache.SHARED);
+    }
+
+    TokenClient(HttpExecutor http, Clock clock, MetadataCache metadata) {
         this.http = http;
         this.clock = clock;
+        this.metadata = metadata;
     }
 
     /** With the JVM's trust store and the default timeouts and retries. */
@@ -64,17 +71,17 @@ final class TokenClient implements TokenFetcher {
      */
     @Override
     public AccessToken fetch(final ClientInfo info, final List<String> scopes) {
-        final String tokenUrl = tokenUrl(info);
         final Instant[] sentAt = new Instant[1];
         // every credential sent, so an error text that echoes the request can be cleaned of them
         final List<String> sent = new ArrayList<String>(Arrays.asList(info.getClientSecret(), info.getRefreshToken()));
         try {
+            final Endpoint endpoint = endpoint(info);
             HttpResponse response = http.execute(new Supplier<HttpRequest>() {
                 @Override
                 public HttpRequest get() {
                     // built anew for every attempt: an assertion's jti may be used only once
                     Instant now = clock.instant();
-                    HttpRequest request = tokenRequest(info, scopes, tokenUrl, now);
+                    HttpRequest request = tokenRequest(info, scopes, endpoint.url, endpoint.authentication, now);
                     sentAt[0] = now;
                     sent.addAll(credentialsIn(request));
                     // sent at most once by the JDK: it would otherwise resend a POST whose connection failed
@@ -90,13 +97,50 @@ final class TokenClient implements TokenFetcher {
         }
     }
 
-    /** The token endpoint; the one place to resolve it, e.g. from server metadata later. */
-    private static String tokenUrl(ClientInfo info) {
-        return info.getTokenUrl();
+    /**
+     * The token endpoint and how to authenticate there: the client info's token URL and client authentication;
+     * or, from the server's metadata, its token endpoint (the mutual TLS alias for a client with a certificate)
+     * and the secret method it lists.
+     */
+    private Endpoint endpoint(ClientInfo info) {
+        if (info.getTokenUrl() != null) {
+            return new Endpoint(info.getTokenUrl(), info.clientAuthentication());
+        }
+        ServerMetadata server = metadata.resolve(info, http);
+        String url = info.getClientCertificate() != null && server.mtlsTokenEndpoint() != null
+                ? server.mtlsTokenEndpoint() : server.tokenEndpoint();
+        return new Endpoint(url, listedAuthentication(info.clientAuthentication(), server.tokenEndpointAuthMethods()));
+    }
+
+    /**
+     * {@code configured}, unless it is a secret method the server leaves out of the methods it lists while it
+     * lists the other one: then that one. Nothing else is adapted, and a server that lists none (RFC 8414's
+     * default, {@code client_secret_basic}) gets what is configured.
+     */
+    static ClientInfo.ClientAuthentication listedAuthentication(ClientInfo.ClientAuthentication configured,
+                                                                List<String> listed) {
+        if (listed.isEmpty()) {
+            return configured;
+        }
+        if (configured == ClientInfo.ClientAuthentication.CLIENT_SECRET_BASIC
+                && !listed.contains("client_secret_basic") && listed.contains("client_secret_post")) {
+            return ClientInfo.ClientAuthentication.CLIENT_SECRET_POST;
+        }
+        if (configured == ClientInfo.ClientAuthentication.CLIENT_SECRET_POST
+                && !listed.contains("client_secret_post") && listed.contains("client_secret_basic")) {
+            return ClientInfo.ClientAuthentication.CLIENT_SECRET_BASIC;
+        }
+        return configured;
+    }
+
+    /** The token request with the client info's own token URL and client authentication. */
+    static HttpRequest tokenRequest(ClientInfo info, List<String> scopes, String tokenUrl, Instant now) {
+        return tokenRequest(info, scopes, tokenUrl, info.clientAuthentication(), now);
     }
 
     /** The token request: grant fields, scope, token parameters, then the client authentication. */
-    static HttpRequest tokenRequest(ClientInfo info, List<String> scopes, String tokenUrl, Instant now) {
+    static HttpRequest tokenRequest(ClientInfo info, List<String> scopes, String tokenUrl,
+                                    ClientInfo.ClientAuthentication authentication, Instant now) {
         List<String[]> form = new ArrayList<String[]>();
         add(form, "grant_type", info.getGrant().getValue());
         switch (info.getGrant()) {
@@ -119,7 +163,7 @@ final class TokenClient implements TokenFetcher {
         Map<String, String> headers = new LinkedHashMap<String, String>();
         headers.put("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
         headers.put("Accept", "application/json");
-        switch (info.clientAuthentication()) {
+        switch (authentication) {
             case CLIENT_SECRET_BASIC:
                 // RFC 6749 section 2.3.1: both parts form-encoded before Base64
                 String credentials = formEncode(info.getClientId()) + ":" + formEncode(info.getClientSecret());
@@ -345,6 +389,18 @@ final class TokenClient implements TokenFetcher {
             }
         }
         return false;
+    }
+
+    /** Where to send a token request, and how the client authenticates there. */
+    private static final class Endpoint {
+
+        final String url;
+        final ClientInfo.ClientAuthentication authentication;
+
+        Endpoint(String url, ClientInfo.ClientAuthentication authentication) {
+            this.url = url;
+            this.authentication = authentication;
+        }
     }
 
     private static String truncate(String s) {

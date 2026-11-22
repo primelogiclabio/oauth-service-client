@@ -46,8 +46,23 @@
         <url>https://github.com/primelogiclabio/oauth-service-client/issues</url>
     </issueManagement>
 
+    <!--
+        From 1.1.0 releases and snapshots go to repo.primelogiclab.io (Reposilite); 1.0.0 stays on Maven Central
+        only. The ids match the <server> entries in settings.xml.
+    -->
+    <distributionManagement>
+        <repository>
+            <id>primelogiclab-releases</id>
+            <url>https://repo.primelogiclab.io/releases</url>
+        </repository>
+        <snapshotRepository>
+            <id>primelogiclab-snapshots</id>
+            <url>https://repo.primelogiclab.io/snapshots</url>
+        </snapshotRepository>
+    </distributionManagement>
+
     <properties>
-        <revision>1.0.0</revision>
+        <revision>1.1.0</revision>
         <changelist>-SNAPSHOT</changelist>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
@@ -106,6 +121,11 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-deploy-plugin</artifactId>
+                <version>3.1.4</version>
+            </plugin>
             <!--
                 The published POM gets the real version, this flavor's Caffeine version and no profiles, so each
                 flavor's consumers see only what applies to them.
@@ -160,7 +180,7 @@
                     </execution>
                 </executions>
             </plugin>
-            <!-- Maven Central wants a javadoc jar; every doclint warning fails the build, so none creep in -->
+            <!-- A javadoc jar goes out with every release; every doclint warning fails the build, so none creep in -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-javadoc-plugin</artifactId>
@@ -279,14 +299,14 @@
             </build>
         </profile>
         <!--
-            Signing and the upload to the Central Portal, for the release workflow only (-Prelease), so local
-            builds never need the key. Uploads wait in the Portal until published there (autoPublish false).
+            Release checks and signing, for the release workflow only (-Prelease), so local builds never need the
+            key. The upload itself is the plain deploy to distributionManagement.
         -->
         <profile>
             <id>release</id>
             <build>
                 <plugins>
-                    <!-- A version that doesn't match its flavor would stay on Central for good -->
+                    <!-- A version that doesn't match its flavor can't be replaced: the repository refuses redeploys -->
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-enforcer-plugin</artifactId>
@@ -326,18 +346,6 @@
                                 </goals>
                             </execution>
                         </executions>
-                    </plugin>
-                    <plugin>
-                        <groupId>org.sonatype.central</groupId>
-                        <artifactId>central-publishing-maven-plugin</artifactId>
-                        <version>0.12.0</version>
-                        <extensions>true</extensions>
-                        <configuration>
-                            <publishingServerId>central</publishingServerId>
-                            <deploymentName>${project.artifactId} ${project.version}</deploymentName>
-                            <autoPublish>false</autoPublish>
-                            <waitUntil>validated</waitUntil>
-                        </configuration>
                     </plugin>
                 </plugins>
             </build>

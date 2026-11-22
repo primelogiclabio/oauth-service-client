@@ -4,16 +4,26 @@ Java library for backend services that call OAuth-protected external APIs (DocuS
 
 ## Install
 
-The library comes in two flavors on Maven Central, with the same API. Pick the one for the Java version your app runs on:
+The library comes in two flavors with the same API. Pick the one for the Java version your app runs on:
 
 | Your app runs on | Version | Built for | Brings along |
 |---|---|---|---|
 | Java 21 or later | `1.0.0` | Java 21 | Caffeine 3 |
 | Java 8 to 20 | `1.0.0-jdk8` | Java 8 | Caffeine 2.9 |
 
+Versions from 1.1.0 on are published to `https://repo.primelogiclab.io/releases`, which needs no login; 1.0.0 is on Maven Central only.
+
 Maven:
 
 ```xml
+<repositories>
+    <repository>
+        <id>primelogiclab-releases</id>
+        <url>https://repo.primelogiclab.io/releases</url>
+        <snapshots><enabled>false</enabled></snapshots>
+    </repository>
+</repositories>
+
 <dependency>
     <groupId>io.primelogiclab</groupId>
     <artifactId>oauth-service-client</artifactId>
@@ -24,7 +34,14 @@ Maven:
 Gradle:
 
 ```groovy
-implementation 'io.primelogiclab:oauth-service-client:1.0.0' // 1.0.0-jdk8 on Java 8 to 20
+repositories {
+    mavenCentral()
+    maven { url 'https://repo.primelogiclab.io/releases' }
+}
+
+dependencies {
+    implementation 'io.primelogiclab:oauth-service-client:1.0.0' // 1.0.0-jdk8 on Java 8 to 20
+}
 ```
 
 When you update, keep the `-jdk8` suffix if you have it: a version without it needs Java 21.

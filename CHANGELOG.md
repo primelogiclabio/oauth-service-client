@@ -2,6 +2,12 @@
 
 All notable changes to this library. Versions follow [Semantic Versioning](https://semver.org/): from 1.0.0 on, a change that breaks callers only comes with a new major version.
 
+## Unreleased
+
+### Changed
+
+- **Where releases are published:** from 1.1.0 on, both flavors go to `https://repo.primelogiclab.io/releases` (public, no login) instead of Maven Central. Add that repository to your build (see the README's Install section). 1.0.0 stays on Maven Central.
+
 ## 1.0.0 (2026-11-15)
 
 The first release, in two flavors with the same API: `1.0.0` for Java 21 and later (on Caffeine 3), and `1.0.0-jdk8` for Java 8 to 20 (on Caffeine 2.9).

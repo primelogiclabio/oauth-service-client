@@ -49,7 +49,7 @@ final class JwtAssertion {
         ClientKey key = info.getSigningKey();
         Jws.Alg alg;
         try {
-            alg = Jws.algorithmFor(key.getPrivateKey());
+            alg = Jws.algorithmFor(key.getPrivateKey(), info.getSigningAlgorithm());
         } catch (IllegalArgumentException e) {
             throw new OAuthServiceException("Cannot sign the assertion: " + e.getMessage(), e);
         }

@@ -6,6 +6,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.PublicKey;
 import java.security.Signature;
+import java.security.spec.MGF1ParameterSpec;
+import java.security.spec.PSSParameterSpec;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Map;
@@ -37,13 +39,21 @@ final class TestJwt {
         return ((Number) claims.get(name)).longValue();
     }
 
-    /** True if the signature is valid for {@code key} with the header's algorithm (RS256 or ES*). */
+    /** True if the signature is valid for {@code key} with the header's algorithm (RS256, PS256 or ES*). */
     boolean verifies(PublicKey key) throws GeneralSecurityException {
-        String alg = (String) header.get("alg");
+        return verifiesAs((String) header.get("alg"), key);
+    }
+
+    /** True if the signature is valid for {@code key} with {@code alg}, whatever the header says. */
+    boolean verifiesAs(String alg, PublicKey key) throws GeneralSecurityException {
         String jca;
         byte[] sig = signature;
+        PSSParameterSpec pss = null;
         if ("RS256".equals(alg)) {
             jca = "SHA256withRSA";
+        } else if ("PS256".equals(alg)) {
+            jca = "RSASSA-PSS"; // RFC 7518 section 3.5: SHA-256, MGF1 with SHA-256, a 32-byte salt
+            pss = new PSSParameterSpec("SHA-256", "MGF1", new MGF1ParameterSpec("SHA-256"), 32, 1);
         } else if (alg.startsWith("ES")) {
             jca = "SHA" + alg.substring(2) + "withECDSA";
             sig = joseToDer(signature);
@@ -51,6 +61,9 @@ final class TestJwt {
             throw new IllegalArgumentException("unexpected alg " + alg);
         }
         Signature s = Signature.getInstance(jca);
+        if (pss != null) {
+            s.setParameter(pss);
+        }
         s.initVerify(key);
         s.update(signingInput.getBytes(StandardCharsets.US_ASCII));
         return s.verify(sig);

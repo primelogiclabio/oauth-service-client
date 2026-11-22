@@ -54,6 +54,21 @@
       }
     },
     {
+      "clientId": "jwt-ps256-client",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-jwt",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "attributes": {
+        "use.jwks.url": "false",
+        "token.endpoint.auth.signing.alg": "PS256",
+        "jwt.credential.certificate": "MIIDRzCCAi+gAwIBAgIUKKTD5sd92IoA/wm5afBynX3kpGQwDQYJKoZIhvcNAQELBQAwJzElMCMGA1UEAwwcb2F1dGgtc2VydmljZS1jbGllbnQgdGVzdCBDQTAeFw0yNjExMTQwNDE2MjFaFw0zNjExMTEwNDE2MjFaMDsxIzAhBgNVBAoMGm9hdXRoLXNlcnZpY2UtY2xpZW50IHRlc3RzMRQwEgYDVQQDDAt0ZXN0LWNsaWVudDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAMF+GqH5KCLLnjQ9fpOQXlQ8kymOnXx08iSErsfnoRNGUfZlur6CzLyxjTMoerXX2cSBY9ub9gMskX1cqdqSrEKLRvR9PyCH4bdDNHmJnydU5bso26Mf2EH/F4qtBHR+f3z47dtYGrv4nVN54JBYxaoEeOdpKUgE+ZKFLxlhM9/aR9umGE5ZCTFWFtrvknUIlaREnp5kP9nisUFoxCY75wQOBWE9eZPeC2ZrNvYjt1RMEPMsSPYt85cpsb7BaqdBG4QUB7AvZ2q5H4f5N+7g8VqvVMa6R7riKWDILjJGE5KJK69c09nJ1IE7kn7EtyfNrMXuACiSDkiPgEZfBwV16k8CAwEAAaNXMFUwEwYDVR0lBAwwCgYIKwYBBQUHAwIwHQYDVR0OBBYEFEYA0whWVF3CEQmbLQuIBhf5tFo+MB8GA1UdIwQYMBaAFG7fC7uHI+OGju4fe3bGV0d+LgKfMA0GCSqGSIb3DQEBCwUAA4IBAQBJm5PLsS7BxYrulikV+2DmWeGWN7vwOgBE8wOkOrCspt5BXmHFL35KF8X9xaxxz6i8msLHBKG6mcxW5ptwz4cb7JVxf4dX4tvv5+2WITiCnCHpUhpEe8CTNONNABZlKBlDw51Kk57nnDYs0PdAEc66kZkFmPgxbX+kZPvdyQZABqL3wRoXFX2CPic0xT07iIa+5ZTR/JYBjgo6VG/WqUhWSYH/SpfpOY2Cf3swIJKtYXAVdIKumY0erq5w52+6lSJm1/zowsaXT4jBc5tauK2gM44cAmxppFT6AV6sJXGuKKvoQYmPqAYEDvvIRkBPltEb+P9Tu0h1TQc30N7fHz/D"
+      }
+    },
+    {
       "clientId": "jwt-ec-client",
       "enabled": true,
       "protocol": "openid-connect",

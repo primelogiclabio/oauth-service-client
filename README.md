@@ -65,6 +65,7 @@ try (OAuthServiceClient service = new OAuthServiceClient()) {
 - When the service answers 401, the token is renewed once and the call sent again; a busy answer with `Retry-After` is retried after that pause.
 - `OAuthServiceClient.builder()` sets the timeouts, retries and response size limit; `ServiceRequest.timeout(...)` sets one call's.
 - `ClientInfo.allowedHost("*.my.salesforce.com")` keeps the token to the hosts you list; recommended when URLs come from responses.
+- `ClientInfo.signingAlgorithm("PS256")` signs with RSASSA-PSS, as Entra ID recommends for certificate credentials; an RSA key signs RS256 otherwise.
 - Instead of `tokenUrl(...)`, `ClientInfo.issuer(...)` reads the token endpoint from the server's metadata (OpenID Connect discovery or RFC 8414), kept for a day; `metadataUrl(...)` names the document when it's elsewhere:
 
 ```java
@@ -161,7 +162,7 @@ Both flavors build from the same source, which stays within Java 8. On JDK 9 and
 
 ## Live check against Keycloak
 
-`KeycloakTokenTest` sends real token requests to a throwaway Keycloak: client credentials with the secret in a Basic header or the body, `private_key_jwt` with RSA and EC keys, mutual TLS, the JWT bearer grant (Keycloak's JWT Authorization Grant) and the refresh token grant. It also calls Keycloak's userinfo endpoint as a service: a revoked token is renewed after the 401, and a certificate-bound token works only with its client certificate. It uses the test realm in `src/test/keycloak` and the TLS fixtures in `src/test/resources/tls`; every secret there is a test value. Without `keycloak.https.url` the test is skipped.
+`KeycloakTokenTest` sends real token requests to a throwaway Keycloak: client credentials with the secret in a Basic header or the body, `private_key_jwt` with RSA keys (RS256, and PS256 where the client requires it) and EC keys, mutual TLS, the JWT bearer grant (Keycloak's JWT Authorization Grant) and the refresh token grant. It also calls Keycloak's userinfo endpoint as a service: a revoked token is renewed after the 401, and a certificate-bound token works only with its client certificate. It uses the test realm in `src/test/keycloak` and the TLS fixtures in `src/test/resources/tls`; every secret there is a test value. Without `keycloak.https.url` the test is skipped.
 
 Start Keycloak (on Windows in Git Bash, put `MSYS_NO_PATHCONV=1` in front):
 

@@ -202,7 +202,8 @@ main [id]{scroll-margin-top:64px}
             <tr><td>Introspection (RFC 7662)</td><td><span class="pill todo">Planned</span></td><td>For tokens that carry no expiry (Salesforce); until then such a token is kept until the service answers 401.</td></tr>
             <tr><td>Metadata discovery (RFC 8414, OpenID Connect)</td><td><span class="pill ok">Done</span></td><td><code>issuer</code> or <code>metadataUrl</code> instead of <code>tokenUrl</code>; the token endpoint (or its mutual TLS alias) and the listed secret method come from the server's metadata, kept for a day.</td></tr>
             <tr><td>Vendor add-on libraries</td><td><span class="pill todo">Planned</span></td><td>See <a href="../PROGRESS.md">PROGRESS.md</a>.</td></tr>
-            <tr><td>DPoP, PS256 signing</td><td><span class="pill out">Parked</span></td><td>Not planned yet.</td></tr>
+            <tr><td>PS256 signing</td><td><span class="pill ok">Done</span></td><td><code>ClientInfo.signingAlgorithm("PS256")</code> for RSA keys, as Entra ID recommends; RS256 stays the default.</td></tr>
+            <tr><td>DPoP</td><td><span class="pill out">Parked</span></td><td>Not planned yet.</td></tr>
           </tbody>
         </table></div>
       </section>
@@ -232,7 +233,7 @@ main [id]{scroll-margin-top:64px}
             <text class="s" x="330" y="229" text-anchor="middle">form + client authentication</text>
             <rect class="box" x="20" y="190" width="160" height="50" rx="8"/>
             <text class="m" x="100" y="212" text-anchor="middle">JwtAssertion, Jws</text>
-            <text class="s" x="100" y="229" text-anchor="middle">RS256, ES256/384/512</text>
+            <text class="s" x="100" y="229" text-anchor="middle">RS/PS256, ES256/384/512</text>
             <rect class="box" x="230" y="270" width="200" height="50" rx="8"/>
             <text class="m" x="330" y="292" text-anchor="middle">HttpExecutor → transport</text>
             <text class="s" x="330" y="309" text-anchor="middle">https only, safe retries, deadline</text>
@@ -421,7 +422,7 @@ grant_type=client_credentials&amp;scope=payroll-calculation&amp;audience=verx%3A
         <div class="table-wrap"><table>
           <thead><tr><th>Part</th><th>Value</th></tr></thead>
           <tbody>
-            <tr><td><code>alg</code></td><td>RS256 for RSA keys; ES256, ES384 or ES512 by the EC key's curve. There is no setting yet.</td></tr>
+            <tr><td><code>alg</code></td><td>RS256 for RSA keys unless <code>signingAlgorithm("PS256")</code> asks for PS256 (RSASSA-PSS with SHA-256, MGF1 and a 32-byte salt), which Entra ID recommends; ES256, ES384 or ES512 by the EC key's curve, which <code>signingAlgorithm</code> may name but not change.</td></tr>
             <tr><td><code>typ</code></td><td><code>JWT</code></td></tr>
             <tr><td><code>kid</code></td><td>The key ID, when the <code>ClientKey</code> has one (<code>withKeyId</code>).</td></tr>
             <tr><td><code>x5t#S256</code>, <code>x5t</code></td><td>SHA-256 and SHA-1 thumbprints of the certificate, when the key has one (Entra ID, Oracle Identity).</td></tr>
@@ -648,7 +649,7 @@ ClientInfo.global("bank")
         <h2 id="limits">Planned and out of scope</h2>
         <ul>
           <li><strong>1.0.0:</strong> on Maven Central as <code>1.0.0</code> (Java 21) and <code>1.0.0-jdk8</code> (Java 8 to 20). <a href="../CHANGELOG.md">CHANGELOG.md</a> lists what it holds and its known limitations. Later versions are published to <code>https://repo.primelogiclab.io/releases</code> instead.</li>
-          <li><strong>After the basics:</strong> PS256 signing, connection reuse, then vendor add-on libraries on top of the core, with Salesforce's token introspection (RFC 7662) in its add-on. Refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body) is noted as an idea, not planned.</li>
+          <li><strong>After the basics:</strong> connection reuse, then vendor add-on libraries on top of the core, with Salesforce's token introspection (RFC 7662) in its add-on. Refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body) is noted as an idea, not planned.</li>
           <li><strong>Unverified:</strong> whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.</li>
           <li><strong>Out of scope:</strong> sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.</li>
         </ul>

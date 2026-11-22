@@ -18,7 +18,7 @@ Your backend calls external services such as DocuSign, Salesforce, Jira, Vertex,
 
 > **No browser, no `/authorize` call.** All three grants are a single POST to the token endpoint. Where a vendor needs a person's approval first (Jira 3LO apps, DocuSign consent), that happens once, outside the library; the caller then passes the resulting refresh token, or relies on the recorded consent.
 
-The core is generic: it implements the standards (RFC 6749, 7523, 8705) and handles vendor differences through generic settings such as `tokenParameter`, `assertionAudience`, `assertionClaim` and `clientSecretInBody`. Vendor-specific clients are planned as a separate layer on top.
+The core is generic: it implements the standards (RFC 6749, 7523, 8705) and handles vendor differences through generic settings such as `tokenParameter`, `assertionAudience`, `assertionClaim` and `clientSecretInBody`. Vendor-specific features are planned as add-on libraries on top of this base client (for example `oauth-service-client-docusign`), so the core stays simple.
 
 ## What works today
 
@@ -34,7 +34,7 @@ The core is generic: it implements the standards (RFC 6749, 7523, 8705) and hand
 | PATCH | Done | Java 11 and later, through `java.net.http` under the same rules; a clear error on Java 8. |
 | Introspection (RFC 7662) | Planned | For tokens that carry no expiry (Salesforce); until then such a token is kept until the service answers 401. |
 | Metadata discovery (RFC 8414) | Planned | An issuer instead of an explicit token URL. |
-| Vendor clients | Planned | See [PROGRESS.md](../PROGRESS.md). |
+| Vendor add-on libraries | Planned | See [PROGRESS.md](../PROGRESS.md). |
 | DPoP, PS256 signing | Parked | Not planned yet. |
 
 ## How the pieces fit
@@ -393,7 +393,7 @@ ClientInfo.global("bank")
 ## Planned and out of scope
 
 - **1.0.0:** on Maven Central as `1.0.0` (Java 21) and `1.0.0-jdk8` (Java 8 to 20). [CHANGELOG.md](../CHANGELOG.md) lists what it holds and its known limitations. Later versions are published to `https://repo.primelogiclab.io/releases` instead.
-- **After the basics:** introspection, metadata discovery, and vendor clients on top of the core. Refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body) is noted as an idea, not planned.
+- **After the basics:** introspection, metadata discovery, and vendor add-on libraries on top of the core. Refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body) is noted as an idea, not planned.
 - **Unverified:** whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.
 - **Out of scope:** sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.
 

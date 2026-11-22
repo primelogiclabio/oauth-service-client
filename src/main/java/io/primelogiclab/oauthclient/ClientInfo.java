@@ -91,6 +91,8 @@ public final class ClientInfo {
     private final String service;
     private final String tenant;
     private final String tokenUrl;
+    private final String issuer;
+    private final String metadataUrl;
     private final Grant grant;
     private final String clientId;
     private final String clientSecret;
@@ -115,6 +117,8 @@ public final class ClientInfo {
         this.service = b.service;
         this.tenant = b.global ? null : b.tenant;
         this.tokenUrl = b.tokenUrl;
+        this.issuer = b.issuer;
+        this.metadataUrl = b.metadataUrl;
         this.grant = b.grant;
         this.clientId = b.clientId;
         this.clientSecret = b.clientSecret;
@@ -182,12 +186,31 @@ public final class ClientInfo {
     }
 
     /**
-     * The token endpoint.
+     * The token endpoint, when it is set directly.
      *
-     * @return the https URL tokens are asked for at
+     * @return the https URL tokens are asked for at; {@code null} when it comes from the server's metadata
+     *         ({@link #getIssuer()}, {@link #getMetadataUrl()})
      */
     public String getTokenUrl() {
         return tokenUrl;
+    }
+
+    /**
+     * The token server's issuer, whose metadata (RFC 8414, OpenID Connect discovery) gives the token endpoint.
+     *
+     * @return the issuer URL, or {@code null} when it isn't set
+     */
+    public String getIssuer() {
+        return issuer;
+    }
+
+    /**
+     * The token server's metadata document, read for the token endpoint instead of the issuer's well-known locations.
+     *
+     * @return the document's https URL, or {@code null} when it isn't set
+     */
+    public String getMetadataUrl() {
+        return metadataUrl;
     }
 
     /**
@@ -441,8 +464,8 @@ public final class ClientInfo {
      */
     List<Object> tokenSettings() {
         // allowedHosts too: a client info without the list mustn't reuse a token another keeps to some hosts
-        return Collections.unmodifiableList(Arrays.<Object>asList(allowedHosts, tokenUrl, grant, clientId, subject,
-                assertionAudience, assertionClaims, scopes, tokenParameters,
+        return Collections.unmodifiableList(Arrays.<Object>asList(allowedHosts, tokenUrl, issuer, metadataUrl, grant,
+                clientId, subject, assertionAudience, assertionClaims, scopes, tokenParameters,
                 clientCertificate == null ? null : clientCertificate.getCertificateChain().get(0)));
     }
 
@@ -530,7 +553,9 @@ public final class ClientInfo {
     public String toString() {
         return "ClientInfo{" + label(service, tenant, tenant == null)
                 + ", grant=" + grant
-                + ", tokenUrl=" + displayUrl(tokenUrl)
+                + (tokenUrl == null ? "" : ", tokenUrl=" + displayUrl(tokenUrl))
+                + (issuer == null ? "" : ", issuer=" + displayUrl(issuer))
+                + (metadataUrl == null ? "" : ", metadataUrl=" + displayUrl(metadataUrl))
                 + ", clientId=" + Strings.safe(clientId)
                 + (clientSecret == null ? "" : ", clientSecret=****" + (clientSecretInBody ? " (in body)" : ""))
                 + (signingKey == null ? "" : ", signingKey=" + signingKey)
@@ -629,6 +654,8 @@ public final class ClientInfo {
         private final String tenant;
         private final boolean global;
         private String tokenUrl;
+        private String issuer;
+        private String metadataUrl;
         private Grant grant = Grant.CLIENT_CREDENTIALS;
         private String clientId;
         private String clientSecret;
@@ -654,13 +681,43 @@ public final class ClientInfo {
         }
 
         /**
-         * The token endpoint. Required.
+         * The token endpoint. Required, unless the server's metadata gives it: then set {@link #issuer(String)}
+         * or {@link #metadataUrl(String)} instead.
          *
          * @param tokenUrl an https URL without user info
          * @return this builder
          */
         public Builder tokenUrl(String tokenUrl) {
             this.tokenUrl = Strings.trim(tokenUrl);
+            return this;
+        }
+
+        /**
+         * The token server's issuer, instead of a {@link #tokenUrl(String) token URL}: the token endpoint comes from
+         * its metadata, read from {@code /.well-known/openid-configuration} or RFC 8414's {@code
+         * /.well-known/oauth-authorization-server} and kept for a day. The document must name this exact issuer.
+         * With a {@link #clientCertificate(ClientKey) client certificate}, its mutual TLS token endpoint is used
+         * when it lists one; when it lists the client authentication methods and leaves out the one the secret
+         * would use, the other (Basic header or form body) is used if listed.
+         *
+         * @param issuer the issuer, an https URL without user info, query or fragment, e.g.
+         *               {@code https://login.microsoftonline.com/{tenant}/v2.0}
+         * @return this builder
+         */
+        public Builder issuer(String issuer) {
+            this.issuer = Strings.trim(issuer);
+            return this;
+        }
+
+        /**
+         * The token server's metadata document, when it isn't at the issuer's well-known locations; read like
+         * the {@link #issuer(String) issuer}'s, which it must name when that is set too.
+         *
+         * @param metadataUrl an https URL without user info
+         * @return this builder
+         */
+        public Builder metadataUrl(String metadataUrl) {
+            this.metadataUrl = Strings.trim(metadataUrl);
             return this;
         }
 
@@ -901,10 +958,7 @@ public final class ClientInfo {
             if (!global && tenant == null) {
                 problems.add("tenant is required (use ClientInfo.global(service) for all tenants)");
             }
-            String urlProblem = urlProblem(tokenUrl);
-            if (urlProblem != null) {
-                problems.add("tokenUrl " + urlProblem);
-            }
+            checkEndpoint(problems);
             if (clientId == null) {
                 problems.add("clientId is required");
             }
@@ -937,6 +991,36 @@ public final class ClientInfo {
                         + String.join("; ", problems));
             }
             return new ClientInfo(this, scopeList, claims, params, attrs, hosts);
+        }
+
+        /** A token URL, or an issuer and/or a metadata URL to read it from; every one an https URL. */
+        private void checkEndpoint(List<String> problems) {
+            boolean discovery = issuer != null || metadataUrl != null;
+            if (tokenUrl != null && discovery) {
+                problems.add("set tokenUrl, or issuer and/or metadataUrl to read it from the server's metadata, not both");
+            }
+            if (tokenUrl != null || !discovery) {
+                String problem = urlProblem(tokenUrl);
+                if (problem != null) {
+                    problems.add("tokenUrl " + problem + (tokenUrl == null
+                            ? " (or issuer or metadataUrl, to read it from the server's metadata)" : ""));
+                }
+            }
+            if (issuer != null) {
+                String problem = urlProblem(issuer);
+                if (problem == null && URI.create(issuer).getRawQuery() != null) {
+                    problem = "must not have a query"; // RFC 8414 section 2
+                }
+                if (problem != null) {
+                    problems.add("issuer " + problem);
+                }
+            }
+            if (metadataUrl != null) {
+                String problem = urlProblem(metadataUrl);
+                if (problem != null) {
+                    problems.add("metadataUrl " + problem);
+                }
+            }
         }
 
         /** Lowercase hosts without duplicates, in the order given; a malformed one goes to {@code problems}. */

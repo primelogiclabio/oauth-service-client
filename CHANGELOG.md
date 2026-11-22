@@ -8,6 +8,7 @@ All notable changes to this library. Versions follow [Semantic Versioning](https
 
 - **Waiting after a failed token request:** no other token request is sent for the same service, tenant, user and scopes for 5 seconds, doubled with each further failure in a row, up to 5 minutes. A token server's `Retry-After` (429, 503) makes the wait at least that long. Meanwhile calls get the cached token while it hasn't expired, else fail at once with the last failure's `OAuthServiceException` details, so a broken configuration doesn't use up a vendor's cap on token requests. A changed secret, key or setting is tried at once.
 - **`ClientInfo.Builder.maxTokenRetryDelay(Duration)`** sets that ceiling, from 0 (no waiting) to 24 hours. For Vertex (10 token requests per 8 hours), 1 hour.
+- **The token endpoint from the server's metadata:** `ClientInfo.Builder.issuer(...)` or `metadataUrl(...)` instead of `tokenUrl(...)`. The metadata is read from OpenID Connect discovery or RFC 8414 and kept for a day; if a refresh fails, the copy held stays in use. The document must name the configured issuer exactly. With a client certificate, the mutual TLS alias of the token endpoint is used when listed. When the server lists its client authentication methods without the one the secret would use, the other (Basic header or form body) is used if listed.
 
 ### Changed
 

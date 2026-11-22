@@ -111,6 +111,14 @@ class KeycloakTokenTest {
     }
 
     @Test
+    void theTokenEndpointCanComeFromKeycloaksMetadata() {
+        ClientInfo info = ClientInfo.global("keycloak-discovery").issuer(base + "/realms/" + REALM)
+                .clientId("service-client").clientSecret("service-dev-secret").build();
+        AccessToken token = client.fetch(info, NO_SCOPES);
+        assertEquals("service-client", TestJwt.parse(token.getValue()).claims.get("azp"));
+    }
+
+    @Test
     void refreshTokenGrant() {
         String refreshToken = passwordGrantRefreshToken();
         AccessToken token = client.fetch(secretClient("password-client", "password-dev-secret").grant(Grant.REFRESH_TOKEN)

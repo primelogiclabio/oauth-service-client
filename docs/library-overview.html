@@ -200,7 +200,7 @@ main [id]{scroll-margin-top:64px}
             <tr><td>Outbound requests</td><td><span class="pill ok">Done</span></td><td>Renew once after a 401, retries (<code>Retry-After</code> in seconds or as a date), <code>retryOnFailure()</code>, <code>builder()</code> settings and a per-call timeout; the mutual TLS socket factory kept per key.</td></tr>
             <tr><td>PATCH</td><td><span class="pill ok">Done</span></td><td>Java 11 and later, through <code>java.net.http</code> under the same rules; a clear error on Java 8.</td></tr>
             <tr><td>Introspection (RFC 7662)</td><td><span class="pill todo">Planned</span></td><td>For tokens that carry no expiry (Salesforce); until then such a token is kept until the service answers 401.</td></tr>
-            <tr><td>Metadata discovery (RFC 8414)</td><td><span class="pill todo">Planned</span></td><td>An issuer instead of an explicit token URL.</td></tr>
+            <tr><td>Metadata discovery (RFC 8414, OpenID Connect)</td><td><span class="pill ok">Done</span></td><td><code>issuer</code> or <code>metadataUrl</code> instead of <code>tokenUrl</code>; the token endpoint (or its mutual TLS alias) and the listed secret method come from the server's metadata, kept for a day.</td></tr>
             <tr><td>Vendor add-on libraries</td><td><span class="pill todo">Planned</span></td><td>See <a href="../PROGRESS.md">PROGRESS.md</a>.</td></tr>
             <tr><td>DPoP, PS256 signing</td><td><span class="pill out">Parked</span></td><td>Not planned yet.</td></tr>
           </tbody>
@@ -329,7 +329,8 @@ main [id]{scroll-margin-top:64px}
           <thead><tr><th>Builder method</th><th>Needed for</th><th>What it does</th></tr></thead>
           <tbody>
             <tr><td><code>forTenant(service, tenant)</code> / <code>global(service)</code></td><td>always</td><td>Names the cache entry. Global is a flag, not a "GLOBAL" tenant, so a real tenant coded GLOBAL can't collide.</td></tr>
-            <tr><td><code>tokenUrl</code></td><td>always</td><td>The token endpoint; https only, no user info, fragment or backslash; a query is allowed.</td></tr>
+            <tr><td><code>tokenUrl</code></td><td>unless <code>issuer</code> or <code>metadataUrl</code></td><td>The token endpoint; https only, no user info, fragment or backslash; a query is allowed.</td></tr>
+            <tr><td><code>issuer</code>, <code>metadataUrl</code></td><td>instead of <code>tokenUrl</code></td><td>Where the token endpoint comes from: the server's metadata, read from the issuer's <code>/.well-known/openid-configuration</code>, then RFC 8414's <code>/.well-known/oauth-authorization-server</code> locations, or from <code>metadataUrl</code>; kept for the whole JVM for a day, and the copy held is used if a refresh fails. The document must name the configured issuer exactly. With a client certificate, its <code>mtls_endpoint_aliases.token_endpoint</code> is used when listed; when it lists the client authentication methods without the one the secret would use, the other (Basic header or form body) is used if listed. A failed read counts as a failed token request, so the wait after failures applies.</td></tr>
             <tr><td><code>grant</code></td><td>optional</td><td><code>CLIENT_CREDENTIALS</code> (default), <code>JWT_BEARER</code> or <code>REFRESH_TOKEN</code>.</td></tr>
             <tr><td><code>clientId</code></td><td>always</td><td>The registered client ID; also the <code>iss</code> of every assertion.</td></tr>
             <tr><td><code>clientSecret</code>, <code>clientSecretInBody</code></td><td>secret clients</td><td>Sent in a Basic header by default, in the form when <code>clientSecretInBody(true)</code>.</td></tr>
@@ -647,7 +648,7 @@ ClientInfo.global("bank")
         <h2 id="limits">Planned and out of scope</h2>
         <ul>
           <li><strong>1.0.0:</strong> on Maven Central as <code>1.0.0</code> (Java 21) and <code>1.0.0-jdk8</code> (Java 8 to 20). <a href="../CHANGELOG.md">CHANGELOG.md</a> lists what it holds and its known limitations. Later versions are published to <code>https://repo.primelogiclab.io/releases</code> instead.</li>
-          <li><strong>After the basics:</strong> introspection, metadata discovery, and vendor add-on libraries on top of the core. Refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body) is noted as an idea, not planned.</li>
+          <li><strong>After the basics:</strong> PS256 signing, connection reuse, then vendor add-on libraries on top of the core, with Salesforce's token introspection (RFC 7662) in its add-on. Refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body) is noted as an idea, not planned.</li>
           <li><strong>Unverified:</strong> whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.</li>
           <li><strong>Out of scope:</strong> sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.</li>
         </ul>
@@ -667,7 +668,7 @@ ClientInfo.global("bank")
           <li><a href="https://www.rfc-editor.org/rfc/rfc7523">RFC 7523: JWT bearer grant and client authentication</a></li>
           <li><a href="https://www.rfc-editor.org/rfc/rfc7519">RFC 7519: JWT</a>, <a href="https://www.rfc-editor.org/rfc/rfc7515">RFC 7515: JWS</a> (<code>x5t</code>, <code>x5t#S256</code>)</li>
           <li><a href="https://www.rfc-editor.org/rfc/rfc8705">RFC 8705: Mutual TLS and certificate-bound tokens</a></li>
-          <li><a href="https://www.rfc-editor.org/rfc/rfc7662">RFC 7662: Token introspection</a>, <a href="https://www.rfc-editor.org/rfc/rfc8414">RFC 8414: Server metadata</a> (planned)</li>
+          <li><a href="https://www.rfc-editor.org/rfc/rfc7662">RFC 7662: Token introspection</a>, <a href="https://www.rfc-editor.org/rfc/rfc8414">RFC 8414: Server metadata</a>, <a href="https://openid.net/specs/openid-connect-discovery-1_0.html">OpenID Connect Discovery</a></li>
         </ul>
         <h3>Libraries and tools</h3>
         <ul>

@@ -273,6 +273,23 @@ class OAuthServiceClientTest {
     }
 
     @Test
+    void aMetadataFailureIsWaitedOutLikeAFailedTokenRequest() throws Exception {
+        StubServer server = server(false); // nothing at the well-known locations
+        OAuthServiceClient service = new OAuthServiceClient(cache, new TokenClient(executor(), java.time.Clock.systemUTC(),
+                new MetadataCache(java.time.Clock.systemUTC())), executor(), OAuthServiceClient.MAX_RESPONSE_BYTES);
+        service.initialize(ClientInfo.forTenant("svc", "acme").issuer(server.url("/idp")).clientId("id")
+                .clientSecret("s").build());
+
+        OAuthServiceException first = assertThrows(OAuthServiceException.class, () -> service.get(server.url("/items")));
+        assertEquals(3, server.requests().size()); // the three well-known locations
+        OAuthServiceException second = assertThrows(OAuthServiceException.class, () -> service.get(server.url("/items")));
+
+        assertTrue(first.getMessage().contains("Couldn't read the authorization server metadata"), first.getMessage());
+        assertSame(first, second.getCause());
+        assertEquals(3, server.requests().size());
+    }
+
+    @Test
     void noAnswerThrowsWithTheUrlRedacted() throws Exception {
         int port;
         try (ServerSocket s = new ServerSocket(0)) {

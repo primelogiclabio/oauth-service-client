@@ -33,7 +33,7 @@ The core is generic: it implements the standards (RFC 6749, 7523, 8705) and hand
 | Outbound requests | Done | Renew once after a 401, retries (`Retry-After` in seconds or as a date), `retryOnFailure()`, `builder()` settings and a per-call timeout; the mutual TLS socket factory kept per key. |
 | PATCH | Done | Java 11 and later, through `java.net.http` under the same rules; a clear error on Java 8. |
 | Introspection (RFC 7662) | Planned | For tokens that carry no expiry (Salesforce); until then such a token is kept until the service answers 401. |
-| Metadata discovery (RFC 8414) | Planned | An issuer instead of an explicit token URL. |
+| Metadata discovery (RFC 8414, OpenID Connect) | Done | `issuer` or `metadataUrl` instead of `tokenUrl`; the token endpoint (or its mutual TLS alias) and the listed secret method come from the server's metadata, kept for a day. |
 | Vendor add-on libraries | Planned | See [PROGRESS.md](../PROGRESS.md). |
 | DPoP, PS256 signing | Parked | Not planned yet. |
 
@@ -125,7 +125,8 @@ Build one with `ClientInfo.forTenant(service, tenant)` or `ClientInfo.global(ser
 | Builder method | Needed for | What it does |
 |---|---|---|
 | `forTenant(service, tenant)` / `global(service)` | always | Names the cache entry. Global is a flag, not a "GLOBAL" tenant, so a real tenant coded GLOBAL can't collide. |
-| `tokenUrl` | always | The token endpoint; https only, no user info, fragment or backslash; a query is allowed. |
+| `tokenUrl` | unless `issuer` or `metadataUrl` | The token endpoint; https only, no user info, fragment or backslash; a query is allowed. |
+| `issuer`, `metadataUrl` | instead of `tokenUrl` | Where the token endpoint comes from: the server's metadata, read from the issuer's `/.well-known/openid-configuration`, then RFC 8414's `/.well-known/oauth-authorization-server` locations, or from `metadataUrl`; kept for the whole JVM for a day, and the copy held is used if a refresh fails. The document must name the configured issuer exactly. With a client certificate, its `mtls_endpoint_aliases.token_endpoint` is used when listed; when it lists the client authentication methods without the one the secret would use, the other (Basic header or form body) is used if listed. A failed read counts as a failed token request, so the wait after failures applies. |
 | `grant` | optional | `CLIENT_CREDENTIALS` (default), `JWT_BEARER` or `REFRESH_TOKEN`. |
 | `clientId` | always | The registered client ID; also the `iss` of every assertion. |
 | `clientSecret`, `clientSecretInBody` | secret clients | Sent in a Basic header by default, in the form when `clientSecretInBody(true)`. |
@@ -393,7 +394,7 @@ ClientInfo.global("bank")
 ## Planned and out of scope
 
 - **1.0.0:** on Maven Central as `1.0.0` (Java 21) and `1.0.0-jdk8` (Java 8 to 20). [CHANGELOG.md](../CHANGELOG.md) lists what it holds and its known limitations. Later versions are published to `https://repo.primelogiclab.io/releases` instead.
-- **After the basics:** introspection, metadata discovery, and vendor add-on libraries on top of the core. Refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body) is noted as an idea, not planned.
+- **After the basics:** PS256 signing, connection reuse, then vendor add-on libraries on top of the core, with Salesforce's token introspection (RFC 7662) in its add-on. Refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body) is noted as an idea, not planned.
 - **Unverified:** whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.
 - **Out of scope:** sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.
 
@@ -411,7 +412,7 @@ ClientInfo.global("bank")
 - [RFC 7523: JWT bearer grant and client authentication](https://www.rfc-editor.org/rfc/rfc7523)
 - [RFC 7519: JWT](https://www.rfc-editor.org/rfc/rfc7519), [RFC 7515: JWS](https://www.rfc-editor.org/rfc/rfc7515) (`x5t`, `x5t#S256`)
 - [RFC 8705: Mutual TLS and certificate-bound tokens](https://www.rfc-editor.org/rfc/rfc8705)
-- [RFC 7662: Token introspection](https://www.rfc-editor.org/rfc/rfc7662), [RFC 8414: Server metadata](https://www.rfc-editor.org/rfc/rfc8414) (planned)
+- [RFC 7662: Token introspection](https://www.rfc-editor.org/rfc/rfc7662), [RFC 8414: Server metadata](https://www.rfc-editor.org/rfc/rfc8414), [OpenID Connect Discovery](https://openid.net/specs/openid-connect-discovery-1_0.html)
 
 ### Libraries and tools
 

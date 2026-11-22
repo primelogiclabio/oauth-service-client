@@ -65,6 +65,16 @@ try (OAuthServiceClient service = new OAuthServiceClient()) {
 - When the service answers 401, the token is renewed once and the call sent again; a busy answer with `Retry-After` is retried after that pause.
 - `OAuthServiceClient.builder()` sets the timeouts, retries and response size limit; `ServiceRequest.timeout(...)` sets one call's.
 - `ClientInfo.allowedHost("*.my.salesforce.com")` keeps the token to the hosts you list; recommended when URLs come from responses.
+- Instead of `tokenUrl(...)`, `ClientInfo.issuer(...)` reads the token endpoint from the server's metadata (OpenID Connect discovery or RFC 8414), kept for a day; `metadataUrl(...)` names the document when it's elsewhere:
+
+```java
+ClientInfo graph = ClientInfo.global("graph")
+        .issuer("https://login.microsoftonline.com/" + directoryId + "/v2.0")  // must match the document's issuer exactly
+        .clientId(applicationId)
+        .clientSecret(secret)
+        .scope("https://graph.microsoft.com/.default")
+        .build();
+```
 
 ## Examples
 

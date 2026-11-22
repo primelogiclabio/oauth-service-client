@@ -388,7 +388,7 @@ ClientInfo.global("bank")
 
 ## Planned and out of scope
 
-- **1.0.0:** on Maven Central as `1.0.0` (Java 21) and `1.0.0-jdk8` (Java 8 to 20). [CHANGELOG.md](../CHANGELOG.md) lists what it holds and its known limitations.
+- **1.0.0:** on Maven Central as `1.0.0` (Java 21) and `1.0.0-jdk8` (Java 8 to 20). [CHANGELOG.md](../CHANGELOG.md) lists what it holds and its known limitations. Later versions are published to `https://repo.primelogiclab.io/releases` instead.
 - **After the basics:** refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body), a short cool-down after failed token requests, introspection, metadata discovery, and vendor clients on top of the core.
 - **Unverified:** whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.
 - **Out of scope:** sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.

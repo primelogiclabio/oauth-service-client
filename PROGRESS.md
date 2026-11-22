@@ -3,7 +3,7 @@
 Goal: Java library that makes outbound calls to OAuth-protected external services (e.g. DocuSign, Salesforce, Jira, Vertex payroll, Entra ID apps, Okta apps, Auth0, Oracle Integration (OIC)) for backend code: the caller passes client info (per service and tenant, or global) and the endpoint and payload; the library gets the token, cached per (service, tenant, user, scopes) until shortly before it expires, and makes the request. Basic first (token requests, public API, outbound requests, tests, README), then features on top.
 
 ## Current focus
-- Release 1.0.0: one jar for Java 8 and 21, built on JDK 21 (so the PATCH class is included), signed in a release profile, a release candidate you verify first, then the repo goes public and 1.0.0 goes to Maven Central (io.primelogiclab namespace verified through primelogiclab.io DNS), tag v1.0.0
+- Release 1.0.0 (paused 2026-11-15, all but the wrap-up done): 1.0.0 (Java 21) and 1.0.0-jdk8 published on Maven Central and checked from a fresh project, repo public and locked down (main PR-only); left: checkpoint this item; the next version (revision 1.1.0) and releases moved from Maven Central to repo.primelogiclab.io (Reposilite, distributionManagement, release workflow on a REPO_TOKEN_NAME/REPO_TOKEN_SECRET token, README/CHANGELOG) are in a PR; still needed before the next tag: a Reposilite CI token (oauth-service-client-ci, rw on /releases/io/primelogiclab/oauth-service-client/) and the GitHub secrets; optional GitHub Release for v1.0.0
 
 ## Next
 - [ ] Refresh token rotation for 3LO apps (Jira): hand each rotated refresh token back to the caller to store; JSON token request body (Atlassian documents only JSON there)

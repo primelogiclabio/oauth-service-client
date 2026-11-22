@@ -1,7 +1,10 @@
 name: release
 
-# Pushing a vX.Y.Z tag builds both flavors on JDK 21, signs them and uploads them to the Central Portal:
-# X.Y.Z (Java 21) and X.Y.Z-jdk8 (Java 8 to 20). They wait there, validated, until published in the Portal.
+# Pushing a vX.Y.Z tag builds both flavors on JDK 21, signs them and deploys them to repo.primelogiclab.io/releases
+# (Reposilite): X.Y.Z (Java 21) and X.Y.Z-jdk8 (Java 8 to 20). They are public as soon as the upload ends.
+# Needs the REPO_TOKEN_NAME and REPO_TOKEN_SECRET secrets: a Reposilite token with rw on
+# /releases/io/primelogiclab/oauth-service-client/. Redeploys are refused, so if an upload breaks off halfway,
+# delete that version's files in the Reposilite dashboard before re-running the job.
 on:
   push:
     tags: ['v*']
@@ -35,13 +38,13 @@ jobs:
             8
             21
           cache: maven
-          server-id: central
-          server-username-env-var: MAVEN_CENTRAL_USERNAME
-          server-password-env-var: MAVEN_CENTRAL_PASSWORD
-      - name: Build, test, sign and upload
+          server-id: primelogiclab-releases
+          server-username-env-var: REPO_TOKEN_NAME
+          server-password-env-var: REPO_TOKEN_SECRET
+      - name: Build, test, sign and deploy
         env:
-          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
-          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          REPO_TOKEN_NAME: ${{ secrets.REPO_TOKEN_NAME }}
+          REPO_TOKEN_SECRET: ${{ secrets.REPO_TOKEN_SECRET }}
           MAVEN_GPG_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
           VERSION_SUFFIX: ${{ matrix.flavor.suffix }}

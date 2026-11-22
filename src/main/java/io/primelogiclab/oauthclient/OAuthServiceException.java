@@ -18,6 +18,8 @@ public class OAuthServiceException extends RuntimeException {
     private final String errorUri;
     /** The HTTP status of the failing answer, or -1 when there was none. */
     private final int httpStatus;
+    /** How long the token server asked to wait (Retry-After on a 429 or 503), or {@code null}. */
+    private final java.time.Duration retryAfter;
 
     /**
      * A failure with no OAuth error and no HTTP status, e.g. for a caller's own tests.
@@ -41,11 +43,23 @@ public class OAuthServiceException extends RuntimeException {
     /** Package-private: only the library knows the OAuth error and HTTP status of a failure. */
     OAuthServiceException(String message, String error, String errorDescription, String errorUri,
                           int httpStatus, Throwable cause) {
+        this(message, error, errorDescription, errorUri, httpStatus, null, cause);
+    }
+
+    /** Package-private: with the pause the token server asked for, which the token cache honors. */
+    OAuthServiceException(String message, String error, String errorDescription, String errorUri,
+                          int httpStatus, java.time.Duration retryAfter, Throwable cause) {
         super(message, cause);
         this.error = error;
         this.errorDescription = errorDescription;
         this.errorUri = errorUri;
         this.httpStatus = httpStatus;
+        this.retryAfter = retryAfter;
+    }
+
+    /** How long the token server asked to wait before the next request, or {@code null} when it didn't say. */
+    java.time.Duration retryAfter() {
+        return retryAfter;
     }
 
     /**

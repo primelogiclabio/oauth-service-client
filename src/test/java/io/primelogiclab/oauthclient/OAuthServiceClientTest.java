@@ -252,6 +252,27 @@ class OAuthServiceClientTest {
     }
 
     @Test
+    void aFailedTokenRequestIsntRepeatedRightAway() throws Exception {
+        StubServer server = server(false);
+        server.always("/token", StubServer.json(401, "{\"error\":\"invalid_client\"}"));
+        server.always("/items", StubServer.json(200, "{}"));
+        OAuthServiceClient service = new OAuthServiceClient(cache, new TokenClient(executor(), java.time.Clock.systemUTC()),
+                executor(), OAuthServiceClient.MAX_RESPONSE_BYTES);
+        service.initialize(ClientInfo.forTenant("vertex", "acme").tokenUrl(server.url("/token")).clientId("id")
+                .clientSecret("wrong").build());
+
+        OAuthServiceException first = assertThrows(OAuthServiceException.class, () -> service.get(server.url("/items")));
+        OAuthServiceException second = assertThrows(OAuthServiceException.class, () -> service.get(server.url("/items")));
+
+        assertEquals("invalid_client", first.getError());
+        assertEquals("invalid_client", second.getError());
+        assertEquals(401, second.getHttpStatus());
+        assertSame(first, second.getCause());
+        assertEquals(1, server.requests().size()); // one token request, and no service call
+        assertEquals("/token", server.last().path);
+    }
+
+    @Test
     void noAnswerThrowsWithTheUrlRedacted() throws Exception {
         int port;
         try (ServerSocket s = new ServerSocket(0)) {

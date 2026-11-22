@@ -47,7 +47,7 @@ What each example service needs from a backend that calls it with no user presen
 ## Vertex Payroll Tax (Vertex Inc.)
 
 - POST form `grant_type=client_credentials`, `client_id`, `client_secret`, `audience=verx://migration-api`, `scope` = `payroll-calculation`, `payroll-addr-cleanse` or their `-test` forms. The page lists the secret as a body field and also shows a Basic header; the Postman guide uses Basic.
-- "up to 10 access token requests … every 8 hours" by default: the token must be cached and shared. The example `expires_in` is 1200 s, which would need more than 10 renewals in 8 hours; check the real lifetime with a live call.
+- "up to 10 access token requests … every 8 hours" by default: the token must be cached and shared. The example `expires_in` is 1200 s, which would need more than 10 renewals in 8 hours; check the real lifetime with a live call. Set `maxTokenRetryDelay(Duration.ofHours(1))` so a failing configuration waits up to an hour between token requests instead of the default 5 minutes.
 - O Series Cloud uses the same token URL and `audience` without a scope; its legacy `auth.vertexsmb.com` endpoint shut down in November 2025.
 - Sources: [access token](https://developer.vertexinc.com/payroll/docs/access-token), [Postman setup](https://developer.vertexinc.com/payroll/docs/configuring-postman-to-work-with-vertex-payroll-tax), [O Series cloud auth](https://developer.vertexinc.com/oseries/docs/authentication-cloud)
 
@@ -95,6 +95,6 @@ What each example service needs from a backend that calls it with no user presen
 - Assertions are short-lived (exp about a minute ahead; Auth0 allows at most 5 minutes, Salesforce 3) with a fresh `jti` every time (Okta, Salesforce and Auth0 allow one use).
 - `aud` is free text: a bare host (DocuSign), a site URL (Salesforce), the token URL (Entra, Okta), the tenant URL with a trailing slash (Auth0), the identity domain URL (OIC).
 - Token response: `expires_in` may be missing and the token opaque (Salesforce), so its expiry comes from token introspection (RFC 7662; Salesforce: `/services/oauth2/introspect`); extra fields such as `instance_url` must reach the caller.
-- Token requests are rate-limited at some vendors (Vertex: 10 per 8 hours), so renew only near expiry and share the cache.
+- Token requests are rate-limited at some vendors (Vertex: 10 per 8 hours), so renew only near expiry, share the cache, and wait after failures (`maxTokenRetryDelay` sets how long at most).
 - Jira: the library targets service accounts (client_credentials) first; 3LO refresh-token rotation, which needs each new refresh token handed back to the caller, comes later.
 - Not in scope: DPoP (Okta default for new service apps; it can be turned off on the app), API keys, OAuth 1.0, request signing (OCI, AWS), ROPC.

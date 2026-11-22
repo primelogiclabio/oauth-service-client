@@ -3,9 +3,16 @@ package io.primelogiclab.oauthclient;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.PrivateKey;
+import java.security.cert.CertificateEncodingException;
 import java.security.cert.X509Certificate;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.Base64;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -72,6 +79,11 @@ public final class ClientInfo {
             "grant_type", "client_id", "client_secret", "client_assertion", "client_assertion_type",
             "assertion", "refresh_token", "scope")));
 
+    /** The longest pause between token requests after failures, unless {@link Builder#maxTokenRetryDelay(Duration)} says otherwise. */
+    static final Duration DEFAULT_MAX_TOKEN_RETRY_DELAY = Duration.ofMinutes(5);
+    /** The most {@link Builder#maxTokenRetryDelay(Duration)} accepts. */
+    static final Duration MAX_TOKEN_RETRY_DELAY_LIMIT = Duration.ofHours(24);
+
     /** JWT claims the library sets itself; an assertion claim may not override them. */
     static final Set<String> RESERVED_ASSERTION_CLAIMS = Collections.unmodifiableSet(new HashSet<String>(Arrays.asList(
             "iss", "sub", "aud", "exp", "iat", "nbf", "jti")));
@@ -94,6 +106,9 @@ public final class ClientInfo {
     private final String introspectionUrl;
     private final Map<String, String> attributes;
     private final List<String> allowedHosts;
+    private final Duration maxTokenRetryDelay;
+    /** SHA-256 of the credentials, made on first use; never shown. */
+    private volatile String credentialsFingerprint;
 
     private ClientInfo(Builder b, List<String> scopes, Map<String, String> assertionClaims,
                        Map<String, String> tokenParameters, Map<String, String> attributes, List<String> allowedHosts) {
@@ -115,6 +130,7 @@ public final class ClientInfo {
         this.introspectionUrl = b.introspectionUrl;
         this.attributes = attributes;
         this.allowedHosts = allowedHosts;
+        this.maxTokenRetryDelay = b.maxTokenRetryDelay;
     }
 
     /**
@@ -311,6 +327,16 @@ public final class ClientInfo {
     }
 
     /**
+     * The longest the library waits after failed token requests before it asks again. After a failure it
+     * waits 5 seconds, doubled with each further failure in a row, up to this.
+     *
+     * @return the ceiling, 5 minutes unless set; zero when the wait is turned off
+     */
+    public Duration getMaxTokenRetryDelay() {
+        return maxTokenRetryDelay;
+    }
+
+    /**
      * The caller's own data, never sent anywhere.
      *
      * @return the attributes by name, in the order set; unmodifiable
@@ -421,6 +447,64 @@ public final class ClientInfo {
     }
 
     /**
+     * A SHA-256 fingerprint of the credentials (secret, refresh token, signing key, client certificate), so a
+     * failed token request is held only against the same ones: a fixed secret or a new key is tried at once.
+     * Equal for equal values, also across rebuilds from the same configuration. Never shown or logged.
+     */
+    String credentialsFingerprint() {
+        String f = credentialsFingerprint;
+        if (f == null) {
+            f = fingerprint();
+            credentialsFingerprint = f;
+        }
+        return f;
+    }
+
+    private String fingerprint() {
+        MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e); // every Java platform has SHA-256
+        }
+        part(digest, clientSecret == null ? null : clientSecret.getBytes(StandardCharsets.UTF_8));
+        part(digest, refreshToken == null ? null : refreshToken.getBytes(StandardCharsets.UTF_8));
+        keyParts(digest, signingKey);
+        keyParts(digest, clientCertificate);
+        return Base64.getEncoder().encodeToString(digest.digest());
+    }
+
+    private static void keyParts(MessageDigest digest, ClientKey key) {
+        if (key == null) {
+            part(digest, null);
+            return;
+        }
+        PrivateKey privateKey = key.getPrivateKey();
+        byte[] encoded = privateKey.getEncoded();
+        // a key that can't be exported (a hardware token) counts by its object
+        part(digest, encoded != null ? encoded
+                : ("object:" + System.identityHashCode(privateKey)).getBytes(StandardCharsets.UTF_8));
+        part(digest, key.getKeyId() == null ? null : key.getKeyId().getBytes(StandardCharsets.UTF_8));
+        try {
+            part(digest, key.hasCertificate() ? key.getCertificateChain().get(0).getEncoded() : null);
+        } catch (CertificateEncodingException e) {
+            part(digest, ("unencodable:" + System.identityHashCode(key)).getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    /** One part, marked and length-prefixed, so two different sets of values never hash the same input. */
+    private static void part(MessageDigest digest, byte[] bytes) {
+        if (bytes == null) {
+            digest.update((byte) 0);
+            return;
+        }
+        digest.update((byte) 1);
+        int n = bytes.length;
+        digest.update(new byte[] {(byte) (n >>> 24), (byte) (n >>> 16), (byte) (n >>> 8), (byte) n});
+        digest.update(bytes);
+    }
+
+    /**
      * The user a cached token belongs to, part of the cache key: the subject with the JWT bearer and refresh
      * token grants; {@code null} with client credentials, whose token serves the whole tenant.
      */
@@ -460,6 +544,7 @@ public final class ClientInfo {
                 + (introspectionUrl == null ? "" : ", introspectionUrl=" + displayUrl(introspectionUrl))
                 + (attributes.isEmpty() ? "" : ", attributes=" + Strings.safe(attributes.keySet().toString()))
                 + (allowedHosts.isEmpty() ? "" : ", allowedHosts=" + Strings.safe(allowedHosts.toString()))
+                + (maxTokenRetryDelay.equals(DEFAULT_MAX_TOKEN_RETRY_DELAY) ? "" : ", maxTokenRetryDelay=" + maxTokenRetryDelay)
                 + '}';
     }
 
@@ -560,6 +645,7 @@ public final class ClientInfo {
         private String introspectionUrl;
         private final Map<String, String> attributes = new LinkedHashMap<String, String>();
         private final List<String> allowedHosts = new ArrayList<String>();
+        private Duration maxTokenRetryDelay = DEFAULT_MAX_TOKEN_RETRY_DELAY;
 
         private Builder(String service, String tenant, boolean global) {
             this.service = Strings.trim(service);
@@ -770,6 +856,22 @@ public final class ClientInfo {
         }
 
         /**
+         * The longest the library waits between token requests after failures. After a failed token request
+         * it sends no other for the same service, tenant, user and scopes for 5 seconds, doubled with each
+         * further failure in a row, up to this; a token server's {@code Retry-After} (429, 503) counts too, up
+         * to this. Calls meanwhile get the cached token while it hasn't expired, else fail at once with the
+         * last failure. Changed credentials or token settings are tried at once. Raise it for a service that
+         * caps token requests (Vertex: 10 per 8 hours).
+         *
+         * @param maxTokenRetryDelay 0 (no waiting) to 24 hours; 5 minutes unless set
+         * @return this builder
+         */
+        public Builder maxTokenRetryDelay(Duration maxTokenRetryDelay) {
+            this.maxTokenRetryDelay = maxTokenRetryDelay;
+            return this;
+        }
+
+        /**
          * The caller's own data, kept with the client info and never sent; set again to replace.
          *
          * @param name  the attribute's name
@@ -826,6 +928,10 @@ public final class ClientInfo {
             Map<String, String> params = toMap("tokenParameter", tokenParameters, RESERVED_TOKEN_PARAMETERS, problems);
             Map<String, String> attrs = toMap("attribute", attributes, Collections.<String>emptySet(), problems);
             List<String> hosts = checkAllowedHosts(allowedHosts, problems);
+            if (maxTokenRetryDelay == null || maxTokenRetryDelay.isNegative()
+                    || maxTokenRetryDelay.compareTo(MAX_TOKEN_RETRY_DELAY_LIMIT) > 0) {
+                problems.add("maxTokenRetryDelay must be 0 to 24 hours");
+            }
             if (!problems.isEmpty()) {
                 throw new IllegalArgumentException("Invalid ClientInfo for " + label(service, tenant, global) + ": "
                         + String.join("; ", problems));

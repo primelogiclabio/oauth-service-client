@@ -639,7 +639,7 @@ ClientInfo.global("bank")
       <section aria-labelledby="testing">
         <h2 id="testing">Testing</h2>
         <ul>
-          <li><code>mvn verify</code> tests the Java 21 flavor, <code>mvn verify -Pjdk8</code> the Java 8 flavor. CI tests the Java 8 flavor on JDK 8 and 21 and the Java 21 flavor on JDK 21, on Linux and Windows. The release workflow runs the Java 8 flavor's tests on Java 8 against the classes it uploads.</li>
+          <li><code>mvn verify</code> tests the Java 21 flavor, <code>mvn verify -Pjdk8</code> the Java 8 flavor. CI tests the Java 8 flavor on JDK 8 and the Java 21 flavor on JDK 21, on Linux and Windows. The release workflow runs the Java 8 flavor's tests on Java 8 against the classes it uploads.</li>
           <li><code>TokenClientTest</code> sends real HTTPS requests to an in-process stub server that uses the test CA in <code>src/test/resources/tls</code>, including a server that requires a client certificate.</li>
           <li><code>OAuthServiceClientTest</code> makes service calls to the stub server: each method, headers, the token shared by instances, your own token, every status, binary bodies, the size limit, a client certificate; <code>ServiceRequestTest</code> checks every rule of a request.</li>
           <li><code>ConnectionReuseTest</code> checks kept-alive connections: calls share one, a token request and each client certificate get their own, a half-read connection is closed, a connection the server closed while idle isn't used, and a late deadline never closes a connection another call is using.</li>

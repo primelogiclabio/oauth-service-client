@@ -388,7 +388,7 @@ ClientInfo.global("bank")
 
 ## Testing
 
-- `mvn verify` tests the Java 21 flavor, `mvn verify -Pjdk8` the Java 8 flavor. CI tests the Java 8 flavor on JDK 8 and 21 and the Java 21 flavor on JDK 21, on Linux and Windows. The release workflow runs the Java 8 flavor's tests on Java 8 against the classes it uploads.
+- `mvn verify` tests the Java 21 flavor, `mvn verify -Pjdk8` the Java 8 flavor. CI tests the Java 8 flavor on JDK 8 and the Java 21 flavor on JDK 21, on Linux and Windows. The release workflow runs the Java 8 flavor's tests on Java 8 against the classes it uploads.
 - `TokenClientTest` sends real HTTPS requests to an in-process stub server that uses the test CA in `src/test/resources/tls`, including a server that requires a client certificate.
 - `OAuthServiceClientTest` makes service calls to the stub server: each method, headers, the token shared by instances, your own token, every status, binary bodies, the size limit, a client certificate; `ServiceRequestTest` checks every rule of a request.
 - `ConnectionReuseTest` checks kept-alive connections: calls share one, a token request and each client certificate get their own, a half-read connection is closed, a connection the server closed while idle isn't used, and a late deadline never closes a connection another call is using.

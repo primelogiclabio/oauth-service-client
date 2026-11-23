@@ -19,13 +19,14 @@ final class HttpRequest {
     private final Duration timeout;
     private final ClientKey clientCertificate;
     private final int maxResponseBytes;
+    private final boolean ownConnection;
 
     HttpRequest(String method, String url, Map<String, String> headers, byte[] body) {
-        this(method, url, headers, body, true, null, null, 0);
+        this(method, url, headers, body, true, null, null, 0, false);
     }
 
     private HttpRequest(String method, String url, Map<String, String> headers, byte[] body, boolean resendable,
-                        Duration timeout, ClientKey clientCertificate, int maxResponseBytes) {
+                        Duration timeout, ClientKey clientCertificate, int maxResponseBytes, boolean ownConnection) {
         this.method = method;
         this.url = url;
         this.headers = Collections.unmodifiableMap(new LinkedHashMap<String, String>(headers));
@@ -34,6 +35,7 @@ final class HttpRequest {
         this.timeout = timeout;
         this.clientCertificate = clientCertificate;
         this.maxResponseBytes = maxResponseBytes;
+        this.ownConnection = ownConnection;
     }
 
     /**
@@ -42,12 +44,14 @@ final class HttpRequest {
      * that means fixed-length streaming mode, which turns off the JDK's automatic POST retry.
      */
     HttpRequest notResendable() {
-        return new HttpRequest(method, url, headers, body, false, timeout, clientCertificate, maxResponseBytes);
+        return new HttpRequest(method, url, headers, body, false, timeout, clientCertificate, maxResponseBytes,
+                ownConnection);
     }
 
     /** This request presenting {@code certificate} in the TLS handshake (mutual TLS); {@code null} for none. */
     HttpRequest withClientCertificate(ClientKey certificate) {
-        return new HttpRequest(method, url, headers, body, resendable, timeout, certificate, maxResponseBytes);
+        return new HttpRequest(method, url, headers, body, resendable, timeout, certificate, maxResponseBytes,
+                ownConnection);
     }
 
     /**
@@ -55,7 +59,22 @@ final class HttpRequest {
      * 0 means the transport's default.
      */
     HttpRequest withMaxResponseBytes(int bytes) {
-        return new HttpRequest(method, url, headers, body, resendable, timeout, clientCertificate, bytes);
+        return new HttpRequest(method, url, headers, body, resendable, timeout, clientCertificate, bytes, ownConnection);
+    }
+
+    /**
+     * This request on a connection of its own, opened for it and closed after it: never one kept alive from
+     * another request, nor kept for a later one. Token requests use this: a kept-alive connection the server
+     * closes at that moment would fail one after sending, and with vendor caps and rotating refresh tokens it
+     * can't simply be sent again.
+     */
+    HttpRequest withOwnConnection() {
+        return new HttpRequest(method, url, headers, body, resendable, timeout, clientCertificate, maxResponseBytes, true);
+    }
+
+    /** True when this request gets a connection of its own; see {@link #withOwnConnection()}. */
+    boolean isOwnConnection() {
+        return ownConnection;
     }
 
     /** Largest response body accepted, in bytes; 0 for the transport's default. */
@@ -79,7 +98,8 @@ final class HttpRequest {
      * read) within the shorter of this and its own request timeout.
      */
     public HttpRequest withTimeout(Duration timeout) {
-        return new HttpRequest(method, url, headers, body, resendable, timeout, clientCertificate, maxResponseBytes);
+        return new HttpRequest(method, url, headers, body, resendable, timeout, clientCertificate, maxResponseBytes,
+                ownConnection);
     }
 
     /** The time left for this request, or {@code null} to use the transport's own request timeout. */

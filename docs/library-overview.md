@@ -36,6 +36,7 @@ The core is generic: it implements the standards (RFC 6749, 7523, 8705) and hand
 | Metadata discovery (RFC 8414, OpenID Connect) | Done | `issuer` or `metadataUrl` instead of `tokenUrl`; the token endpoint (or its mutual TLS alias) and the listed secret method come from the server's metadata, kept for a day. |
 | Vendor add-on libraries | Planned | See [PROGRESS.md](../PROGRESS.md). |
 | PS256 signing | Done | `ClientInfo.signingAlgorithm("PS256")` for RSA keys, as Entra ID recommends; RS256 stays the default. |
+| Connection reuse | Done | Connections kept alive per host and client certificate; a token request gets a connection of its own. |
 | DPoP | Parked | Not planned yet. |
 
 ## How the pieces fit
@@ -69,7 +70,7 @@ Everything below `OAuthServiceClient` is package-private, so the public surface 
 | `TokenCache` | package | Reuse, renewal, one renewal per key, eviction. |
 | `TokenClient` (a `TokenFetcher`) | package | Builds and sends the token request, reads the answer. |
 | `JwtAssertion`, `Jws` | package | Signed JWTs for the JWT bearer grant and `private_key_jwt`. |
-| `HttpExecutor`, `UrlConnectionTransport`, `Tls` | package | Retries and the overall deadline; HTTP over the JDK's `HttpURLConnection`; the TLS socket factory for a client certificate. |
+| `HttpExecutor`, `UrlConnectionTransport`, `Tls` | package | Retries and the overall deadline; HTTP over the JDK's `HttpURLConnection`, with kept-alive connections; the TLS socket factory for a client certificate. |
 
 ## Calling a service
 
@@ -102,6 +103,7 @@ OAuthServiceClient service = OAuthServiceClient.builder()
 - **The token:** the library's, from the cache, for the request's scopes or else the `ClientInfo` defaults; or your own, sent as `Bearer` as is, never cached or renewed, and with nothing of the `ClientInfo` (no client certificate, so no allowed-host check either). A request can't carry both scopes and your own token.
 - **The answer:** every status comes back as a `ServiceResponse`: `getStatus()`, `getHeader(name)`, `getBody()` (text by the Content-Type charset) and `getBodyBytes()` (a PDF arrives intact). Up to 16 MB unless the builder sets another limit.
 - **Retries:** a call is resent when nothing was sent, or after a 429 or 503 with `Retry-After`; `retryOnFailure()` adds 5xx and other failures for idempotent calls. A POST is sent in a mode that stops Java itself from sending it twice; Java may resend a GET, PUT or DELETE once if the connection fails before the answer. Redirects aren't followed, so the token never goes to another host.
+- **Connections:** Java keeps connections alive and reuses them per host and client certificate, so most calls need no new TCP connection or TLS handshake. A token request gets a connection of its own, closed after the answer, and a connection a call leaves half-read (an answer over the size limit, the deadline) is closed, never reused. A server may close an idle connection just as a call takes it: Java checks a connection is open before a POST takes it, and resends a GET, PUT or DELETE once on a new one. A POST that loses that race anyway fails as a connection lost after sending, resent only with `retryOnFailure()`. Java's own settings apply, JVM-wide: `http.keepAlive=false` turns reuse off, and `http.maxConnections` (5) idle connections per host are kept for the server's `Keep-Alive` time, else 5 s.
 - **401:** with the library's token, the token is renewed once (one token request, shared by every thread holding it) and the call sent once more, if the token is at least 60 s old and the call has time left. A token just issued that's turned away isn't the problem (a permission error, a wrong audience), and renewing it every time would use up a vendor's token limit. With your own token the 401 comes back.
 - **Settings:** `OAuthServiceClient.builder()` sets the timeouts, the retries and the response size limit; `ServiceRequest.timeout(...)` sets one call's limit, for a large download. The timeouts also apply to the instance's token requests.
 - **Checked first:** the URL must be https before any token is fetched; a bad URL or token gives an `IllegalArgumentException` that doesn't repeat the value.
@@ -376,7 +378,8 @@ ClientInfo.global("bank")
 - **Who shares a token:** tokens are cached per service, tenant, user and scopes. A client credentials token serves the whole tenant (server to server). With the JWT bearer grant the user is the `subject`; with a refresh token the `subject` names the user the refresh token belongs to and is required, so one user never gets another user's token.
 - **Trusted configuration:** build `ClientInfo` from your own configuration, not from tenant input: a tenant that could set the token URL and audience could collect an assertion signed with your key. Anything in the same class loader that builds a `ClientInfo` with the same service, tenant, user, token URL and client ID gets the cached token, so don't share the jar between applications that don't trust each other (a server's shared `lib/` folder).
 - **TLS:** the library uses its own TLS context with the JVM's trust store (`cacerts`, or `javax.net.ssl.trustStore`), checks host names itself and presents no client certificate unless the `ClientInfo` has one. Settings other code makes JVM-wide (a socket factory or host name verifier that accepts anything, `javax.net.ssl.keyStore`, `jdk.internal.httpclient.disableHostnameVerification` for PATCH) don't apply.
-- **Deadlines:** at the call deadline the request's sockets are closed, so a server that stalls the connection or the TLS handshake can't hold a thread or a host slot.
+- **Kept-alive connections:** a connection made with a client certificate is reused only for calls with that same `ClientKey`, never for another tenant's or for a call without one. Calls without a certificate share connections, as each carries its own token.
+- **Deadlines:** at the call deadline the request's connection is closed, so a server that stalls the connection or the TLS handshake can't hold a thread or a host slot. A connection another call has taken over since is left alone.
 - **At most once:** every token request and every POST to a service is sent in a mode that stops Java from resending it; a 401 answer's body can't be read in that mode, so a token endpoint's 401 is reported as `invalid_client`. A PATCH isn't resent by Java either (and is refused if a JVM-wide setting would change that). Java may resend a GET, PUT or DELETE once when a connection fails before the answer.
 - **Java's Authenticator:** on Java 9 and later the JVM's default `java.net.Authenticator` is asked only for proxy logins, never for a service's 401 login challenge. On Java 8 that holds for POSTs only: an application on Java 8 with a default Authenticator should make it check `getRequestorType()`.
 - **Messages and logs:** never a secret, token or assertion; credentials a server echoes back in an error are replaced by `****`; URLs are shown without user info or query.
@@ -388,6 +391,7 @@ ClientInfo.global("bank")
 - `mvn verify` tests the Java 21 flavor, `mvn verify -Pjdk8` the Java 8 flavor. CI tests the Java 8 flavor on JDK 8 and 21 and the Java 21 flavor on JDK 21, on Linux and Windows. The release workflow runs the Java 8 flavor's tests on Java 8 against the classes it uploads.
 - `TokenClientTest` sends real HTTPS requests to an in-process stub server that uses the test CA in `src/test/resources/tls`, including a server that requires a client certificate.
 - `OAuthServiceClientTest` makes service calls to the stub server: each method, headers, the token shared by instances, your own token, every status, binary bodies, the size limit, a client certificate; `ServiceRequestTest` checks every rule of a request.
+- `ConnectionReuseTest` checks kept-alive connections: calls share one, a token request and each client certificate get their own, a half-read connection is closed, a connection the server closed while idle isn't used, and a late deadline never closes a connection another call is using.
 - `TransportSecurityTest` checks the transport's defences: a stalled TLS handshake ends at the deadline, a trust-all default installed JVM-wide isn't used, TLS sockets check host names, and a service's login challenge never reaches the JVM's Authenticator.
 - `KeycloakTokenTest` sends real token requests to a throwaway Keycloak 26.8.1: secret in a header and in the body, `private_key_jwt` with RSA and EC keys, mutual TLS with a certificate-bound token, the JWT bearer grant and the refresh token grant. It also calls Keycloak's userinfo endpoint as a service: a revoked token is renewed after the 401, and a certificate-bound token (RFC 8705) is accepted with its client certificate and refused without it. The README section "Live check against Keycloak" has the commands.
 - Key tests are checked by mutation: each check breaks one rule in the code (for example, swap Basic and body, drop `x5t`, leave scopes out of the cache key) and confirms a test fails.
@@ -395,7 +399,7 @@ ClientInfo.global("bank")
 ## Planned and out of scope
 
 - **1.0.0:** on Maven Central as `1.0.0` (Java 21) and `1.0.0-jdk8` (Java 8 to 20). [CHANGELOG.md](../CHANGELOG.md) lists what it holds and its known limitations. Later versions are published to `https://repo.primelogiclab.io/releases` instead.
-- **After the basics:** connection reuse, then vendor add-on libraries on top of the core, with Salesforce's token introspection (RFC 7662) in its add-on. Refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body) is noted as an idea, not planned.
+- **After the basics:** vendor add-on libraries on top of the core, with Salesforce's token introspection (RFC 7662) in its add-on. Refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body) is noted as an idea, not planned.
 - **Unverified:** whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.
 - **Out of scope:** sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.
 

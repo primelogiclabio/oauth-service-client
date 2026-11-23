@@ -86,8 +86,10 @@ final class TokenClient implements TokenFetcher {
                     sent.addAll(credentialsIn(request));
                     // sent at most once by the JDK: it would otherwise resend a POST whose connection failed
                     // before the answer, reusing a one-time assertion or refresh token and counting against
-                    // vendor caps; the library's own retries above happen only when the server didn't get it
-                    return request.notResendable().withMaxResponseBytes(MAX_RESPONSE_BYTES);
+                    // vendor caps; the library's own retries above happen only when the server didn't get it.
+                    // On a connection of its own: a kept-alive one the server closes just then would fail it
+                    // after sending, when it can't be sent again
+                    return request.notResendable().withOwnConnection().withMaxResponseBytes(MAX_RESPONSE_BYTES);
                 }
             }, HttpExecutor.Retry.IF_NOT_PROCESSED);
             return parse(response, sentAt[0], sent, clock);

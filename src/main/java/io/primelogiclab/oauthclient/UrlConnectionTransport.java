@@ -1,6 +1,9 @@
 package io.primelogiclab.oauthclient;
 
 import java.io.ByteArrayOutputStream;
+import java.io.Closeable;
+import java.io.FilterInputStream;
+import java.io.FilterOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InterruptedIOException;
@@ -10,12 +13,17 @@ import java.lang.reflect.Method;
 import java.net.Authenticator;
 import java.net.HttpURLConnection;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.PasswordAuthentication;
 import java.net.Socket;
+import java.net.SocketAddress;
+import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.net.URL;
+import java.nio.channels.SocketChannel;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
@@ -186,14 +194,22 @@ final class UrlConnectionTransport implements HttpTransport {
     private static final int SENDING = 1;
     private static final int ABANDONED = 2;
 
-    /** One request's shared state: its phase, deadline, connection and sockets, so the caller can end it. */
-    private static final class Call {
+    /**
+     * One request's shared state: its phase, deadline, connection and the sockets it is using, so the caller
+     * can end it. A connection kept alive passes from request to request, so a request closes a socket only
+     * while it is still that socket's user, and nothing once it has finished.
+     */
+    static final class Call {
         final AtomicInteger phase = new AtomicInteger(CONNECTING);
         final long deadlineNanos; // 0 = none
         volatile boolean expired;
         volatile HttpURLConnection connection;
-        /** The request's sockets: closing them also ends a TCP connect in progress, which disconnect() can't reach. */
-        private final List<Socket> sockets = new ArrayList<Socket>();
+        /**
+         * The sockets this request has used: closing them also ends a TCP connect in progress, which
+         * disconnect() can't reach. Guarded by itself, as is {@code finished}.
+         */
+        private final List<TrackedSocket> sockets = new ArrayList<TrackedSocket>();
+        private boolean finished;
 
         Call(long deadlineNanos) {
             this.deadlineNanos = deadlineNanos;
@@ -203,43 +219,48 @@ final class UrlConnectionTransport implements HttpTransport {
             return expired || (deadlineNanos != 0 && System.nanoTime() - deadlineNanos > 0);
         }
 
-        /** Remembers a socket of this request; one made after the request was given up is closed at once. */
-        <S extends Socket> S track(S socket) {
-            boolean closeNow;
+        /**
+         * Notes that {@code socket} is being used for this request: made, read or written.
+         *
+         * @return false if the request was given up, so the socket is to be closed
+         */
+        boolean using(TrackedSocket socket) {
             synchronized (sockets) {
-                closeNow = expired;
-                if (!closeNow) {
+                if (expired) {
+                    return false;
+                }
+                if (!finished && !sockets.contains(socket)) {
                     sockets.add(socket);
                 }
+                return true;
             }
-            if (closeNow) {
-                closeQuietly(socket);
-            }
-            return socket;
         }
 
         /**
-         * Gives up on the request: it is not sent if it wasn't yet, and its connection is closed so the
-         * worker stops reading. The close runs on its own short-lived thread, because closing can wait
-         * until a blocked read returns.
+         * Gives up on the request: it is not sent if it wasn't yet, and the sockets it is using are closed so
+         * the worker stops reading. The close runs on its own short-lived thread, because closing can wait
+         * until a blocked read returns. Once the request has finished, nothing is closed: its connection may
+         * be carrying another request by then.
          *
          * @return true if nothing of the request was sent
          */
         boolean abandon() {
-            final List<Socket> open;
+            final List<TrackedSocket> open;
+            final HttpURLConnection c;
             synchronized (sockets) {
                 expired = true;
-                open = new ArrayList<Socket>(sockets);
+                open = finished ? Collections.<TrackedSocket>emptyList() : new ArrayList<TrackedSocket>(sockets);
+                c = finished ? null : connection;
             }
             boolean notSent = phase.compareAndSet(CONNECTING, ABANDONED) || phase.get() == ABANDONED;
-            final HttpURLConnection c = connection;
             if (c != null || !open.isEmpty()) {
                 daemon(new Runnable() {
                     @Override
                     public void run() {
-                        // the sockets first: during the TCP connect disconnect() does nothing
-                        for (Socket socket : open) {
-                            closeQuietly(socket);
+                        // the sockets first: during the TCP connect disconnect() does nothing. A socket another
+                        // request has used since is left alone; disconnect() then closes at most an idle one
+                        for (TrackedSocket socket : open) {
+                            socket.closeFor(Call.this);
                         }
                         if (c != null) {
                             c.disconnect();
@@ -249,7 +270,40 @@ final class UrlConnectionTransport implements HttpTransport {
             }
             return notSent;
         }
+
+        /**
+         * Closes the sockets this request is still using, on this thread, so a connection it leaves half-used
+         * is never kept alive for another request.
+         */
+        void closeSockets() {
+            List<TrackedSocket> open;
+            synchronized (sockets) {
+                open = finished ? Collections.<TrackedSocket>emptyList() : new ArrayList<TrackedSocket>(sockets);
+            }
+            for (TrackedSocket socket : open) {
+                socket.closeFor(this);
+            }
+        }
+
+        /**
+         * Ends the request: the sockets it used are no longer its own, so neither its deadline nor anything
+         * else of it closes them.
+         */
+        void finish() {
+            List<TrackedSocket> used;
+            synchronized (sockets) {
+                finished = true;
+                used = new ArrayList<TrackedSocket>(sockets);
+                sockets.clear();
+            }
+            for (TrackedSocket socket : used) {
+                socket.release(this);
+            }
+        }
     }
+
+    /** The request the current thread is sending, for the sockets it uses; set by {@link #send(HttpRequest, Call)}. */
+    private static final ThreadLocal<Call> CURRENT = new ThreadLocal<Call>();
 
     private final int connectTimeoutMs;
     private final int readTimeoutMs;
@@ -261,13 +315,13 @@ final class UrlConnectionTransport implements HttpTransport {
      * trust store (or {@code trustManagers}), never the JVM-wide default factory, which other code may have
      * replaced (with one that trusts everything) and which presents {@code javax.net.ssl.keyStore}'s key.
      */
-    private final SSLSocketFactory defaultSocketFactory;
+    private final TrackingSocketFactory defaultSocketFactory;
     /**
-     * Socket factories per client certificate, so repeated calls with one key reuse its TLS context and
-     * sessions. Keyed by the key object's identity (weak keys): a different key, another tenant's say,
-     * never shares one, and an entry goes when its key is no longer used.
+     * Socket factories per client certificate, so repeated calls with one key reuse its TLS context, sessions
+     * and kept-alive connections. Keyed by the key object's identity (weak keys): a different key, another
+     * tenant's say, never shares one, and an entry goes when its key is no longer used.
      */
-    private final Cache<ClientKey, SSLSocketFactory> certificateFactories =
+    private final Cache<ClientKey, TrackingSocketFactory> certificateFactories =
             Caffeine.newBuilder().weakKeys().maximumSize(MAX_CERTIFICATE_FACTORIES).build();
 
     /**
@@ -282,7 +336,8 @@ final class UrlConnectionTransport implements HttpTransport {
         this.readTimeoutMs = toMillis(readTimeout);
         this.requestTimeoutMs = requestTimeout == null ? 0 : Math.max(1, requestTimeout.toMillis());
         this.trustManagers = trustManagers == null ? null : trustManagers.clone();
-        this.defaultSocketFactory = Tls.socketFactory(null, this.trustManagers);
+        this.defaultSocketFactory = new TrackingSocketFactory(Tls.socketFactory(null, this.trustManagers),
+                connectTimeoutMs);
     }
 
     @Override
@@ -466,6 +521,15 @@ final class UrlConnectionTransport implements HttpTransport {
         }
     }
 
+    /** For tests: makes {@code call} (or, with {@code null}, none) the request this thread is sending. */
+    static void sendingFor(Call call) {
+        if (call == null) {
+            CURRENT.remove();
+        } else {
+            CURRENT.set(call);
+        }
+    }
+
     /** Worker threads running a request right now; for tests. */
     static int busyWorkers() {
         return Workers.EXECUTOR.getActiveCount();
@@ -548,8 +612,9 @@ final class UrlConnectionTransport implements HttpTransport {
     }
 
     /** The TLS socket factory presenting {@code certificate}, made once per key and kept. */
-    SSLSocketFactory socketFactoryFor(final ClientKey certificate) {
-        return certificateFactories.get(certificate, key -> Tls.socketFactory(key, trustManagers));
+    TrackingSocketFactory socketFactoryFor(final ClientKey certificate) {
+        return certificateFactories.get(certificate,
+                key -> new TrackingSocketFactory(Tls.socketFactory(key, trustManagers), connectTimeoutMs));
     }
 
     /** The overall limit per request in milliseconds, 0 for none; for tests. */
@@ -557,14 +622,34 @@ final class UrlConnectionTransport implements HttpTransport {
         return requestTimeoutMs;
     }
 
+    /**
+     * Sends the request on a connection the JDK keeps alive, per host and TLS socket factory: one it kept
+     * from an earlier request if it has one, and keeps for a later one once the answer was read to its end. A
+     * request that fails, or has a connection of its own, closes its connection instead.
+     */
     private HttpResponse send(HttpRequest request, Call call) throws IOException {
         URL url = new URL(request.getUrl());
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         call.connection = conn;
+        CURRENT.set(call);
+        boolean answered = false;
         try {
-            return send(conn, url, request, call);
+            HttpResponse response = send(conn, url, request, call);
+            answered = true;
+            return response;
         } finally {
-            conn.disconnect();
+            try {
+                if (!answered || request.isOwnConnection()) {
+                    // the sockets first: a half-used connection is never kept alive for another request.
+                    // disconnect() then closes one taken from the JDK's pool and not used yet, and takes a
+                    // connection of its own out of the pool
+                    call.closeSockets();
+                    conn.disconnect();
+                }
+            } finally {
+                call.finish();
+                CURRENT.remove();
+            }
         }
     }
 
@@ -572,11 +657,12 @@ final class UrlConnectionTransport implements HttpTransport {
         warnAboutJvmCookies();
         if (conn instanceof HttpsURLConnection) {
             HttpsURLConnection https = (HttpsURLConnection) conn;
-            // a new factory per client certificate: the JDK reuses a kept-alive connection only with the
-            // same factory, so a connection made with one tenant's certificate never carries another's request
-            SSLSocketFactory factory = request.getClientCertificate() != null
+            // a factory per client certificate: the JDK reuses a kept-alive connection only with the same
+            // factory, so a connection made with one tenant's certificate never carries another's request, nor
+            // one without a certificate. A request with a connection of its own gets a factory of its own
+            TrackingSocketFactory factory = request.getClientCertificate() != null
                     ? socketFactoryFor(request.getClientCertificate()) : defaultSocketFactory;
-            https.setSSLSocketFactory(new CallSocketFactory(factory, call));
+            https.setSSLSocketFactory(request.isOwnConnection() ? factory.fresh() : factory);
             // the JDK's own host name check decides; a lenient JVM-wide default verifier is never asked
             https.setHostnameVerifier(NO_EXCEPTIONS);
         }
@@ -585,7 +671,9 @@ final class UrlConnectionTransport implements HttpTransport {
         conn.setReadTimeout(readTimeoutMs);
         conn.setInstanceFollowRedirects(false);
         conn.setUseCaches(false);
-        conn.setRequestMethod(request.getMethod());
+        // the JDK's own literal: a JDK comparing the method by identity still checks that a kept-alive
+        // connection is open before a POST takes it
+        conn.setRequestMethod(request.getMethod().intern());
         for (Map.Entry<String, String> h : request.getHeaders().entrySet()) {
             try {
                 conn.setRequestProperty(h.getKey(), h.getValue());
@@ -629,6 +717,7 @@ final class UrlConnectionTransport implements HttpTransport {
     }
 
     private static byte[] readBody(InputStream in, int limit, Call call) throws IOException {
+        boolean complete = false;
         try {
             ByteArrayOutputStream buf = new ByteArrayOutputStream();
             byte[] chunk = new byte[8192];
@@ -642,9 +731,17 @@ final class UrlConnectionTransport implements HttpTransport {
                 }
                 buf.write(chunk, 0, n);
             }
+            complete = true;
             return buf.toByteArray();
         } finally {
-            in.close();
+            if (complete) {
+                in.close();
+            } else {
+                // the sockets first: closing the stream of a half-read answer would have the JDK read the
+                // rest in the background and keep the connection alive
+                call.closeSockets();
+                closeQuietly(in);
+            }
         }
     }
 
@@ -703,33 +800,42 @@ final class UrlConnectionTransport implements HttpTransport {
         return SET_AUTHENTICATOR != null;
     }
 
-    private static void closeQuietly(Socket socket) {
+    private static void closeQuietly(Closeable closeable) {
         try {
-            socket.close();
+            closeable.close();
         } catch (IOException | RuntimeException ignored) {
             // closing to give up: nothing more to do
         }
     }
 
     /**
-     * Makes this request's sockets through the TLS factory and hands each to the {@link Call}, so the call
-     * can close them at its deadline. The TCP socket is a plain one the JDK connects and then layers TLS
-     * over: closing it ends a connect or TLS handshake in progress at once. Every TLS socket checks the host name itself (HTTPS
-     * endpoint identification).
+     * The TLS socket factory set on every HTTPS connection: one per TLS context (the default, and one per client
+     * certificate), as the JDK keeps connections alive per factory and reuses them only with the same one. Each
+     * TCP socket under TLS is a {@link TrackedSocket}, whether made here or, through a proxy, by the JDK, so the
+     * request using it can close it at its deadline: closing it ends a connect or TLS handshake in progress at
+     * once. Every TLS socket checks the host name itself (HTTPS endpoint identification).
      */
-    static final class CallSocketFactory extends SSLSocketFactory {
+    static final class TrackingSocketFactory extends SSLSocketFactory {
 
         private final SSLSocketFactory tls;
-        private final Call call;
+        private final int connectTimeoutMs;
 
-        CallSocketFactory(SSLSocketFactory tls, Call call) {
+        TrackingSocketFactory(SSLSocketFactory tls, int connectTimeoutMs) {
             this.tls = tls;
-            this.call = call;
+            this.connectTimeoutMs = connectTimeoutMs;
         }
 
-        /** For tests: a factory whose sockets nothing tracks. */
-        static CallSocketFactory untracked(SSLSocketFactory tls) {
-            return new CallSocketFactory(tls, new Call(0));
+        /** For tests: a factory whose sockets no request tracks unless one is being sent on this thread. */
+        static TrackingSocketFactory untracked(SSLSocketFactory tls) {
+            return new TrackingSocketFactory(tls, 0);
+        }
+
+        /**
+         * A factory of its own over the same TLS context: the JDK keeps its connection for no other request,
+         * while the TLS session still resumes.
+         */
+        TrackingSocketFactory fresh() {
+            return new TrackingSocketFactory(tls, connectTimeoutMs);
         }
 
         @Override
@@ -742,36 +848,53 @@ final class UrlConnectionTransport implements HttpTransport {
             return tls.getSupportedCipherSuites();
         }
 
-        /** The unconnected TCP socket the JDK connects (and tunnels through a proxy) before layering TLS over it. */
+        /** The unconnected TCP socket the JDK connects before layering TLS over it (without a proxy). */
         @Override
         public Socket createSocket() {
-            return call.track(new Socket());
+            return TrackedSocket.adopt(new Socket());
         }
 
+        /** TLS over {@code s}; through a proxy, {@code s} is a socket the JDK made and tunnelled itself. */
         @Override
         public Socket createSocket(Socket s, String host, int port, boolean autoClose) throws IOException {
-            call.track(s);
-            return call.track(identifyHost(tls.createSocket(s, host, port, autoClose)));
+            Socket tcp = s instanceof TrackedSocket ? s : TrackedSocket.adopt(s);
+            return identifyHost(tls.createSocket(tcp, host, port, autoClose));
         }
 
         @Override
         public Socket createSocket(String host, int port) throws IOException {
-            return call.track(identifyHost(tls.createSocket(host, port)));
+            return direct(new InetSocketAddress(host, port), null, host, port);
         }
 
         @Override
         public Socket createSocket(String host, int port, InetAddress localHost, int localPort) throws IOException {
-            return call.track(identifyHost(tls.createSocket(host, port, localHost, localPort)));
+            return direct(new InetSocketAddress(host, port), new InetSocketAddress(localHost, localPort), host, port);
         }
 
         @Override
         public Socket createSocket(InetAddress host, int port) throws IOException {
-            return call.track(identifyHost(tls.createSocket(host, port)));
+            return direct(new InetSocketAddress(host, port), null, host.getHostName(), port);
         }
 
         @Override
         public Socket createSocket(InetAddress address, int port, InetAddress localAddress, int localPort) throws IOException {
-            return call.track(identifyHost(tls.createSocket(address, port, localAddress, localPort)));
+            return direct(new InetSocketAddress(address, port), new InetSocketAddress(localAddress, localPort),
+                    address.getHostName(), port);
+        }
+
+        /** A TLS socket connected straight to the host (the JDK's fallback when a proxy tunnel fails), tracked too. */
+        private Socket direct(InetSocketAddress remote, InetSocketAddress local, String host, int port) throws IOException {
+            TrackedSocket tcp = TrackedSocket.adopt(new Socket());
+            try {
+                if (local != null) {
+                    tcp.bind(local);
+                }
+                tcp.connect(remote, connectTimeoutMs);
+                return identifyHost(tls.createSocket(tcp, host, port, true));
+            } catch (IOException | RuntimeException e) {
+                closeQuietly(tcp);
+                throw e;
+            }
         }
 
         private static Socket identifyHost(Socket socket) {
@@ -782,6 +905,348 @@ final class UrlConnectionTransport implements HttpTransport {
                 ssl.setSSLParameters(params);
             }
             return socket;
+        }
+    }
+
+    /**
+     * The TCP socket under a TLS connection, with the request that last used it: every read and write marks
+     * the current thread's request as its user. When the JDK keeps the connection alive and hands it to the
+     * next request, that request becomes its user at its first read or write, and the one before, should its
+     * deadline come late, leaves it alone. Should a request close it before then, the next one finds a dead
+     * connection, which the JDK replaces before sending anything (a POST) or resends on (GET, PUT, DELETE).
+     * Delegates to the real socket; its own is never connected.
+     */
+    static final class TrackedSocket extends Socket {
+
+        private final Socket socket;
+        private final Object lock = new Object();
+        private Call user; // guarded by lock
+        private InputStream input; // guarded by lock
+        private OutputStream output; // guarded by lock
+
+        private TrackedSocket(Socket socket) {
+            this.socket = socket;
+        }
+
+        /** {@code socket}, tracked for the current thread's request; closed at once if that request was given up. */
+        static TrackedSocket adopt(Socket socket) {
+            TrackedSocket tracked = new TrackedSocket(socket);
+            if (!tracked.mark()) {
+                closeQuietly(socket);
+            }
+            return tracked;
+        }
+
+        /**
+         * Marks the current thread's request, if any, as this socket's user.
+         *
+         * @return false if that request was given up
+         */
+        private boolean mark() {
+            Call call = CURRENT.get();
+            if (call == null) {
+                return true; // the JDK's own threads, closing or cleaning up an idle connection
+            }
+            synchronized (lock) {
+                if (user == call && !call.expired) {
+                    return true;
+                }
+                if (!call.using(this)) {
+                    return false;
+                }
+                user = call;
+                return true;
+            }
+        }
+
+        /** Before every read and write: marks the user, and refuses I/O for a request that was given up. */
+        private void claim() throws IOException {
+            if (!mark()) {
+                closeQuietly(socket);
+                throw new SocketException("Request given up at its deadline");
+            }
+        }
+
+        /**
+         * Closes the socket if {@code call} is still its user.
+         *
+         * @return true if it was closed
+         */
+        boolean closeFor(Call call) {
+            synchronized (lock) {
+                if (user != call) {
+                    return false;
+                }
+                closeQuietly(socket);
+                return true;
+            }
+        }
+
+        /** {@code call} is done with this socket: it no longer counts as its user. */
+        void release(Call call) {
+            synchronized (lock) {
+                if (user == call) {
+                    user = null;
+                }
+            }
+        }
+
+        /** The request using this socket, or {@code null}; for tests. */
+        Call user() {
+            synchronized (lock) {
+                return user;
+            }
+        }
+
+        @Override
+        public InputStream getInputStream() throws IOException {
+            synchronized (lock) {
+                if (input == null) {
+                    input = new FilterInputStream(socket.getInputStream()) {
+                        @Override
+                        public int read() throws IOException {
+                            claim();
+                            return in.read();
+                        }
+
+                        @Override
+                        public int read(byte[] b, int off, int len) throws IOException {
+                            claim();
+                            return in.read(b, off, len);
+                        }
+
+                        @Override
+                        public long skip(long n) throws IOException {
+                            claim();
+                            return in.skip(n);
+                        }
+                    };
+                }
+                return input;
+            }
+        }
+
+        @Override
+        public OutputStream getOutputStream() throws IOException {
+            synchronized (lock) {
+                if (output == null) {
+                    output = new FilterOutputStream(socket.getOutputStream()) {
+                        @Override
+                        public void write(int b) throws IOException {
+                            claim();
+                            out.write(b);
+                        }
+
+                        @Override
+                        public void write(byte[] b, int off, int len) throws IOException {
+                            claim();
+                            out.write(b, off, len);
+                        }
+
+                        @Override
+                        public void flush() throws IOException {
+                            claim();
+                            out.flush();
+                        }
+                    };
+                }
+                return output;
+            }
+        }
+
+        @Override
+        public void connect(SocketAddress endpoint) throws IOException {
+            socket.connect(endpoint);
+        }
+
+        @Override
+        public void connect(SocketAddress endpoint, int timeout) throws IOException {
+            socket.connect(endpoint, timeout);
+        }
+
+        @Override
+        public void bind(SocketAddress bindpoint) throws IOException {
+            socket.bind(bindpoint);
+        }
+
+        @Override
+        public void close() throws IOException {
+            socket.close();
+        }
+
+        @Override
+        public void shutdownInput() throws IOException {
+            socket.shutdownInput();
+        }
+
+        @Override
+        public void shutdownOutput() throws IOException {
+            socket.shutdownOutput();
+        }
+
+        @Override
+        public InetAddress getInetAddress() {
+            return socket.getInetAddress();
+        }
+
+        @Override
+        public InetAddress getLocalAddress() {
+            return socket.getLocalAddress();
+        }
+
+        @Override
+        public int getPort() {
+            return socket.getPort();
+        }
+
+        @Override
+        public int getLocalPort() {
+            return socket.getLocalPort();
+        }
+
+        @Override
+        public SocketAddress getRemoteSocketAddress() {
+            return socket.getRemoteSocketAddress();
+        }
+
+        @Override
+        public SocketAddress getLocalSocketAddress() {
+            return socket.getLocalSocketAddress();
+        }
+
+        @Override
+        public SocketChannel getChannel() {
+            return socket.getChannel();
+        }
+
+        @Override
+        public void setTcpNoDelay(boolean on) throws SocketException {
+            socket.setTcpNoDelay(on);
+        }
+
+        @Override
+        public boolean getTcpNoDelay() throws SocketException {
+            return socket.getTcpNoDelay();
+        }
+
+        @Override
+        public void setSoLinger(boolean on, int linger) throws SocketException {
+            socket.setSoLinger(on, linger);
+        }
+
+        @Override
+        public int getSoLinger() throws SocketException {
+            return socket.getSoLinger();
+        }
+
+        @Override
+        public void sendUrgentData(int data) throws IOException {
+            socket.sendUrgentData(data);
+        }
+
+        @Override
+        public void setOOBInline(boolean on) throws SocketException {
+            socket.setOOBInline(on);
+        }
+
+        @Override
+        public boolean getOOBInline() throws SocketException {
+            return socket.getOOBInline();
+        }
+
+        @Override
+        public void setSoTimeout(int timeout) throws SocketException {
+            socket.setSoTimeout(timeout);
+        }
+
+        @Override
+        public int getSoTimeout() throws SocketException {
+            return socket.getSoTimeout();
+        }
+
+        @Override
+        public void setSendBufferSize(int size) throws SocketException {
+            socket.setSendBufferSize(size);
+        }
+
+        @Override
+        public int getSendBufferSize() throws SocketException {
+            return socket.getSendBufferSize();
+        }
+
+        @Override
+        public void setReceiveBufferSize(int size) throws SocketException {
+            socket.setReceiveBufferSize(size);
+        }
+
+        @Override
+        public int getReceiveBufferSize() throws SocketException {
+            return socket.getReceiveBufferSize();
+        }
+
+        @Override
+        public void setKeepAlive(boolean on) throws SocketException {
+            socket.setKeepAlive(on);
+        }
+
+        @Override
+        public boolean getKeepAlive() throws SocketException {
+            return socket.getKeepAlive();
+        }
+
+        @Override
+        public void setTrafficClass(int tc) throws SocketException {
+            socket.setTrafficClass(tc);
+        }
+
+        @Override
+        public int getTrafficClass() throws SocketException {
+            return socket.getTrafficClass();
+        }
+
+        @Override
+        public void setReuseAddress(boolean on) throws SocketException {
+            socket.setReuseAddress(on);
+        }
+
+        @Override
+        public boolean getReuseAddress() throws SocketException {
+            return socket.getReuseAddress();
+        }
+
+        @Override
+        public void setPerformancePreferences(int connectionTime, int latency, int bandwidth) {
+            socket.setPerformancePreferences(connectionTime, latency, bandwidth);
+        }
+
+        @Override
+        public boolean isConnected() {
+            return socket.isConnected();
+        }
+
+        @Override
+        public boolean isBound() {
+            return socket.isBound();
+        }
+
+        @Override
+        public boolean isClosed() {
+            return socket.isClosed();
+        }
+
+        @Override
+        public boolean isInputShutdown() {
+            return socket.isInputShutdown();
+        }
+
+        @Override
+        public boolean isOutputShutdown() {
+            return socket.isOutputShutdown();
+        }
+
+        @Override
+        public String toString() {
+            return socket.toString();
         }
     }
 

@@ -103,7 +103,7 @@ class TransportSecurityTest {
         try (ServerSocket listener = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"));
              Socket plain = new Socket("127.0.0.1", listener.getLocalPort());
              Socket accepted = listener.accept()) {
-            SSLSocketFactory factory = UrlConnectionTransport.CallSocketFactory.untracked(
+            SSLSocketFactory factory = UrlConnectionTransport.TrackingSocketFactory.untracked(
                     Tls.socketFactory(null, TestTls.clientTrust()));
 
             SSLSocket tls = (SSLSocket) factory.createSocket(plain, "localhost", listener.getLocalPort(), false);

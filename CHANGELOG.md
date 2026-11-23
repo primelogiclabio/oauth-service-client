@@ -14,6 +14,7 @@ All notable changes to this library. Versions follow [Semantic Versioning](https
 
 ### Changed
 
+- **Connections are reused:** calls to a host keep their TCP and TLS connection alive for the next call, per client certificate, instead of opening a new one each time. A token request still gets a connection of its own. A POST that meets a connection the server closes at that moment fails as a connection lost after sending; `retryOnFailure()` resends it. `-Dhttp.keepAlive=false` turns reuse off JVM-wide.
 - **Where releases are published:** from 1.1.0 on, both flavors go to `https://repo.primelogiclab.io/releases` (public, no login) instead of Maven Central. Add that repository to your build (see the README's Install section). 1.0.0 stays on Maven Central.
 
 ## 1.0.0 (2026-11-15)

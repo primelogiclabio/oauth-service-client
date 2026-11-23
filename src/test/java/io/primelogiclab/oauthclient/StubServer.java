@@ -42,6 +42,8 @@ final class StubServer implements AutoCloseable {
         final byte[] body;
         final Map<String, String> headers = new LinkedHashMap<String, String>();
         long delayMillis;
+        int stallAfterBytes = -1;
+        long stallMillis;
 
         Response(int status, String contentType, String body) {
             this(status, contentType, body.getBytes(StandardCharsets.UTF_8));
@@ -63,6 +65,13 @@ final class StubServer implements AutoCloseable {
             delayMillis = millis;
             return this;
         }
+
+        /** Sends the first {@code bytes} of the body, then waits this long before the rest. */
+        Response stallAfter(int bytes, long millis) {
+            stallAfterBytes = bytes;
+            stallMillis = millis;
+            return this;
+        }
     }
 
     static final class Recorded {
@@ -73,14 +82,18 @@ final class StubServer implements AutoCloseable {
         final byte[] bodyBytes;
         /** Client certificate presented on the TLS connection, or {@code null}. */
         final X509Certificate clientCertificate;
+        /** The client's port: requests on one kept-alive connection share it. */
+        final int clientPort;
 
-        Recorded(String method, String path, Map<String, String> headers, byte[] body, X509Certificate clientCertificate) {
+        Recorded(String method, String path, Map<String, String> headers, byte[] body, X509Certificate clientCertificate,
+                 int clientPort) {
             this.method = method;
             this.path = path;
             this.headers = headers;
             this.bodyBytes = body;
             this.body = new String(body, StandardCharsets.UTF_8);
             this.clientCertificate = clientCertificate;
+            this.clientPort = clientPort;
         }
 
         String header(String name) {
@@ -120,12 +133,21 @@ final class StubServer implements AutoCloseable {
 
     /** With {@code needClientAuth} the TLS handshake fails without a client certificate the test CA issued. */
     StubServer(final SSLContext tls, final boolean needClientAuth) throws IOException {
+        this(tls, needClientAuth, false);
+    }
+
+    /** With {@code wantClientAuth} a client may present a certificate, or none. */
+    StubServer(final SSLContext tls, final boolean needClientAuth, final boolean wantClientAuth) throws IOException {
         server = HttpsServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.setHttpsConfigurator(new HttpsConfigurator(tls) {
             @Override
             public void configure(HttpsParameters params) {
                 SSLParameters p = tls.getDefaultSSLParameters();
-                p.setNeedClientAuth(needClientAuth);
+                if (needClientAuth) {
+                    p.setNeedClientAuth(true);
+                } else if (wantClientAuth) {
+                    p.setWantClientAuth(true);
+                }
                 params.setSSLParameters(p);
             }
         });
@@ -187,7 +209,8 @@ final class StubServer implements AutoCloseable {
             } catch (SSLPeerUnverifiedException none) {
                 // no client certificate presented
             }
-            requests.add(new Recorded(ex.getRequestMethod(), path, headers, read(ex.getRequestBody()), clientCert));
+            requests.add(new Recorded(ex.getRequestMethod(), path, headers, read(ex.getRequestBody()), clientCert,
+                    ex.getRemoteAddress().getPort()));
 
             Response r;
             synchronized (this) {
@@ -214,7 +237,18 @@ final class StubServer implements AutoCloseable {
             ex.sendResponseHeaders(r.status, bytes.length == 0 ? -1 : bytes.length);
             if (bytes.length > 0) {
                 OutputStream out = ex.getResponseBody();
-                out.write(bytes);
+                if (r.stallAfterBytes >= 0 && r.stallAfterBytes < bytes.length) {
+                    out.write(bytes, 0, r.stallAfterBytes);
+                    out.flush();
+                    try {
+                        Thread.sleep(r.stallMillis);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    out.write(bytes, r.stallAfterBytes, bytes.length - r.stallAfterBytes);
+                } else {
+                    out.write(bytes);
+                }
                 out.close();
             }
         } finally {

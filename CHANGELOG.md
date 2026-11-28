@@ -2,6 +2,8 @@
 
 All notable changes to this library. Versions follow [Semantic Versioning](https://semver.org/): from 1.0.0 on, a change that breaks callers only comes with a new major version.
 
+## Unreleased
+
 ## 1.1.0 (2026-11-27)
 
 The first release on `https://repo.primelogiclab.io/releases`, in the same two flavors: `1.1.0` for Java 21 and later, and `1.1.0-jdk8` for Java 8 to 20. Add that repository to your build (see the README's Install section).

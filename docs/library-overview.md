@@ -2,7 +2,7 @@
 
 A Java library for backend services that call OAuth-protected APIs. You describe each service and tenant once in a `ClientInfo`; the library gets the access token, keeps it until shortly before it expires, attaches it and makes the request.
 
-3 grants · 5 client authentication methods · 1 runtime dependency (Caffeine) · two flavors: `1.0.0` for Java 21, `1.0.0-jdk8` for Java 8 to 20
+3 grants · 5 client authentication methods · 1 runtime dependency (Caffeine) · two flavors: `1.1.0` for Java 21, `1.1.0-jdk8` for Java 8 to 20
 
 The same content, with diagrams, is in [library-overview.html](library-overview.html).
 
@@ -399,7 +399,7 @@ ClientInfo.global("bank")
 
 ## Planned and out of scope
 
-- **1.0.0:** on Maven Central as `1.0.0` (Java 21) and `1.0.0-jdk8` (Java 8 to 20). [CHANGELOG.md](../CHANGELOG.md) lists what it holds and its known limitations. Later versions are published to `https://repo.primelogiclab.io/releases` instead.
+- **Releases:** 1.1.0 on `https://repo.primelogiclab.io/releases` as `1.1.0` (Java 21) and `1.1.0-jdk8` (Java 8 to 20), where later versions go too; 1.0.0 on Maven Central only. [CHANGELOG.md](../CHANGELOG.md) lists what each holds and its known limitations.
 - **After the basics:** vendor add-on libraries on top of the core, with Salesforce's token introspection (RFC 7662) in its add-on. Refresh-token rotation handed back to the caller (Jira 3LO, with a JSON request body) is noted as an idea, not planned.
 - **Unverified:** whether Salesforce's token endpoint accepts a Basic header alongside the JWT bearer grant, which introspection there would need.
 - **Out of scope:** sign-in and the authorization code flow, DPoP, API keys, OAuth 1.0, request signing (OCI, AWS), the password grant.
@@ -425,4 +425,4 @@ ClientInfo.global("bank")
 - [Caffeine](https://github.com/ben-manes/caffeine): 3.x in the Java 21 flavor; 2.9.3, the last line that runs on Java 8, in the Java 8 flavor
 - [Keycloak: JWT Authorization Grant](https://www.keycloak.org/securing-apps/jwt-authorization-grant), used by the live check
 
-*Describes the code as of 1.0.0 (November 2026).*
+*Describes the code as of 1.1.0 (November 2026).*

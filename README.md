@@ -8,8 +8,8 @@ The library comes in two flavors with the same API. Pick the one for the Java ve
 
 | Your app runs on | Version | Built for | Brings along |
 |---|---|---|---|
-| Java 21 or later | `1.0.0` | Java 21 | Caffeine 3 |
-| Java 8 to 20 | `1.0.0-jdk8` | Java 8 | Caffeine 2.9 |
+| Java 21 or later | `1.1.0` | Java 21 | Caffeine 3 |
+| Java 8 to 20 | `1.1.0-jdk8` | Java 8 | Caffeine 2.9 |
 
 Versions from 1.1.0 on are published to `https://repo.primelogiclab.io/releases`, which needs no login; 1.0.0 is on Maven Central only.
 
@@ -27,7 +27,7 @@ Maven:
 <dependency>
     <groupId>io.primelogiclab</groupId>
     <artifactId>oauth-service-client</artifactId>
-    <version>1.0.0</version> <!-- 1.0.0-jdk8 on Java 8 to 20 -->
+    <version>1.1.0</version> <!-- 1.1.0-jdk8 on Java 8 to 20 -->
 </dependency>
 ```
 
@@ -40,7 +40,7 @@ repositories {
 }
 
 dependencies {
-    implementation 'io.primelogiclab:oauth-service-client:1.0.0' // 1.0.0-jdk8 on Java 8 to 20
+    implementation 'io.primelogiclab:oauth-service-client:1.1.0' // 1.1.0-jdk8 on Java 8 to 20
 }
 ```
 
@@ -149,8 +149,8 @@ Every answer comes back as a `ServiceResponse`, whatever its status: check `getS
 
 ## Requirements
 
-- `1.0.0` needs Java 21 or later.
-- `1.0.0-jdk8` runs on Java 8 or later. Its PATCH needs Java 11 or later: it is sent with Java's `java.net.http` client, since `HttpURLConnection` can't send it; on Java 8 it fails with a clear error.
+- `1.1.0` needs Java 21 or later.
+- `1.1.0-jdk8` runs on Java 8 or later. Its PATCH needs Java 11 or later: it is sent with Java's `java.net.http` client, since `HttpURLConnection` can't send it; on Java 8 it fails with a clear error.
 
 ## Build
 

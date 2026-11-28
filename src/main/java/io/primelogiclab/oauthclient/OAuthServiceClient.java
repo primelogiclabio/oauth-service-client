@@ -130,6 +130,36 @@ public final class OAuthServiceClient implements AutoCloseable {
         return new Builder();
     }
 
+    /**
+     * Sets the most calls in flight to one host (and port) at once, for the whole JVM (per class loader):
+     * every client, tenant, token request and service call shares it, PATCH included, since a vendor counts
+     * what comes from one source. A further call to that host waits its turn, first come, first served, and
+     * fails as not sent ({@link OAuthServiceException}) if no slot comes free before its deadline.
+     *
+     * <p>It takes effect at once: a higher limit lets waiting calls in, and with a lower one the calls in flight
+     * carry on while new ones wait until fewer than the new limit are. The limit is per JVM, so several
+     * instances of an application together send up to that many times the limit. Above 64 calls in flight
+     * a call runs on the caller's thread, with the same deadline. Java keeps only {@code http.maxConnections}
+     * idle connections per host (5 by default), so with a higher limit raise that too, or more calls need a
+     * new connection.
+     *
+     * @param max at least 1; 32 unless set
+     * @throws IllegalArgumentException if {@code max} is below 1
+     */
+    public static void setMaxRequestsPerHost(int max) {
+        UrlConnectionTransport.setMaxPerHost(max);
+    }
+
+    /**
+     * The most calls in flight to one host at once in this JVM, as {@link #setMaxRequestsPerHost(int)}
+     * describes.
+     *
+     * @return the limit; 32 unless set
+     */
+    public static int getMaxRequestsPerHost() {
+        return UrlConnectionTransport.maxPerHost();
+    }
+
     OAuthServiceClient(TokenCache cache, TokenFetcher fetcher, HttpExecutor http, int maxResponseBytes) {
         this(cache, fetcher, http, maxResponseBytes, MIN_TOKEN_AGE_FOR_RENEWAL);
     }

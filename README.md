@@ -64,6 +64,7 @@ try (OAuthServiceClient service = new OAuthServiceClient()) {
 - `service.token()` gives the token itself, for response fields such as Salesforce's `instance_url`.
 - When the service answers 401, the token is renewed once and the call sent again; a busy answer with `Retry-After` is retried after that pause.
 - `OAuthServiceClient.builder()` sets the timeouts, retries and response size limit; `ServiceRequest.timeout(...)` sets one call's.
+- At most 32 calls are in flight to one host at once in the JVM, for all tenants, and further calls wait their turn; `OAuthServiceClient.setMaxRequestsPerHost(n)` changes that.
 - `ClientInfo.allowedHost("*.my.salesforce.com")` keeps the token to the hosts you list; recommended when URLs come from responses.
 - `ClientInfo.signingAlgorithm("PS256")` signs with RSASSA-PSS, as Entra ID recommends for certificate credentials; an RSA key signs RS256 otherwise.
 - Instead of `tokenUrl(...)`, `ClientInfo.issuer(...)` reads the token endpoint from the server's metadata (OpenID Connect discovery or RFC 8414), kept for a day; `metadataUrl(...)` names the document when it's elsewhere:

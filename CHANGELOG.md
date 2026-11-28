@@ -11,8 +11,11 @@ All notable changes to this library. Versions follow [Semantic Versioning](https
 - **The token endpoint from the server's metadata:** `ClientInfo.Builder.issuer(...)` or `metadataUrl(...)` instead of `tokenUrl(...)`. The metadata is read from OpenID Connect discovery or RFC 8414 and kept for a day; if a refresh fails, the copy held stays in use. The document must name the configured issuer exactly. With a client certificate, the mutual TLS alias of the token endpoint is used when listed. When the server lists its client authentication methods without the one the secret would use, the other (Basic header or form body) is used if listed.
 
 - **`ClientInfo.Builder.signingAlgorithm(String)`:** `PS256` makes an RSA key sign its assertions with RSASSA-PSS (SHA-256), which Entra ID recommends for certificate credentials; RS256 stays the default, and an EC key keeps its curve's ES algorithm. `build()` reports a name that doesn't fit the key. Switching it is tried at once after a failed token request, and the cached token stays.
+- **`OAuthServiceClient.setMaxRequestsPerHost(int)`** and `getMaxRequestsPerHost()`: the limit on calls in flight to one host at once, still shared JVM-wide by every client and tenant, can now be changed from its default of 32, at once while running. Several instances of an application together send up to that many times the limit.
 
 ### Changed
+
+- **Calls waiting for a host are served in the order they came:** when a host's limit is reached, a slot that comes free goes to the call that has waited longest, and a new call waits behind it. Before, every waiting call was woken and any of them, or a new one, could take it.
 
 - **Connections are reused:** calls to a host keep their TCP and TLS connection alive for the next call, per client certificate, instead of opening a new one each time. A token request still gets a connection of its own. A POST that meets a connection the server closes at that moment fails as a connection lost after sending; `retryOnFailure()` resends it. `-Dhttp.keepAlive=false` turns reuse off JVM-wide.
 - **Where releases are published:** from 1.1.0 on, both flavors go to `https://repo.primelogiclab.io/releases` (public, no login) instead of Maven Central. Add that repository to your build (see the README's Install section). 1.0.0 stays on Maven Central.

@@ -22,8 +22,10 @@ import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.channels.SocketChannel;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
@@ -37,6 +39,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
@@ -64,11 +68,12 @@ final class UrlConnectionTransport implements HttpTransport {
     static final int MAX_WORKERS = 64;
 
     /**
-     * Most requests in flight to one host (and port) at once in this JVM. A further request to that host
-     * waits for one of them to finish, until its own deadline; so one server that does not answer, for
-     * example a tenant's, holds at most this many connections and worker threads.
+     * Most requests in flight to one host (and port) at once in this JVM unless {@link #setMaxPerHost(int)}
+     * sets another limit. A further request to that host waits its turn, first come, first served, until its
+     * own deadline; so one server that does not answer, for example a tenant's, holds at most this many
+     * connections and worker threads.
      */
-    static final int MAX_PER_HOST = 32;
+    static final int DEFAULT_MAX_PER_HOST = 32;
 
     /** Most client certificates whose socket factory is kept per transport. */
     static final long MAX_CERTIFICATE_FACTORIES = 1000;
@@ -76,8 +81,36 @@ final class UrlConnectionTransport implements HttpTransport {
     /** The overall limit per request the library uses by default. */
     static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(60);
 
-    /** Requests in flight per host:port; an entry is removed when its count drops to zero. Guarded by itself. */
-    private static final Map<String, int[]> IN_FLIGHT = new java.util.HashMap<String, int[]>();
+    /** Guards {@link #SLOTS} and {@link #maxPerHost}. Package-private for tests only. */
+    static final ReentrantLock SLOT_LOCK = new ReentrantLock();
+
+    /**
+     * Requests in flight and requests waiting, per host:port; an entry is removed once it has neither.
+     * Guarded by {@link #SLOT_LOCK}.
+     */
+    private static final Map<String, Slots> SLOTS = new HashMap<String, Slots>();
+
+    /** The most requests in flight per host:port. Guarded by {@link #SLOT_LOCK}. */
+    private static int maxPerHost = DEFAULT_MAX_PER_HOST;
+
+    /**
+     * One host's requests in flight and its queue of waiting requests. While the queue isn't empty, the host
+     * has no free slot: a slot that comes free goes straight to the head of the queue.
+     */
+    private static final class Slots {
+        int inFlight;
+        final ArrayDeque<Waiter> waiting = new ArrayDeque<Waiter>();
+
+        boolean idle() {
+            return inFlight == 0 && waiting.isEmpty();
+        }
+    }
+
+    /** A request waiting for a slot, woken alone when it is given one. */
+    private static final class Waiter {
+        final Condition turn = SLOT_LOCK.newCondition();
+        boolean granted;
+    }
 
     /** Ends requests that run on the caller's thread at their deadline. Only hands work to short-lived threads. */
     private static final class Watchdog {
@@ -460,64 +493,157 @@ final class UrlConnectionTransport implements HttpTransport {
         }
     }
 
-    /** host:port of a URL, the unit that {@link #MAX_PER_HOST} counts. */
+    /** host:port of a URL, the unit that the limit on requests in flight counts. */
     static String hostKey(String url) throws IOException {
         URL u = new URL(url);
         int port = u.getPort() < 0 ? u.getDefaultPort() : u.getPort();
         return u.getHost().toLowerCase(java.util.Locale.ROOT) + ":" + port;
     }
 
-    /** Takes a slot for {@code host}, waiting for a free one until the deadline. */
+    /**
+     * Sets the most requests in flight to one host:port at once in this JVM. A higher limit lets waiting
+     * requests in at once; with a lower one, requests already in flight carry on, and new ones wait until
+     * fewer than the new limit are.
+     *
+     * @throws IllegalArgumentException if {@code max} is below 1
+     */
+    static void setMaxPerHost(int max) {
+        if (max < 1) {
+            throw new IllegalArgumentException("maxRequestsPerHost must be at least 1");
+        }
+        SLOT_LOCK.lock();
+        try {
+            maxPerHost = max;
+            for (Slots slots : SLOTS.values()) {
+                handOut(slots);
+            }
+        } finally {
+            SLOT_LOCK.unlock();
+        }
+    }
+
+    /** The most requests in flight to one host:port at once in this JVM. */
+    static int maxPerHost() {
+        SLOT_LOCK.lock();
+        try {
+            return maxPerHost;
+        } finally {
+            SLOT_LOCK.unlock();
+        }
+    }
+
+    /**
+     * Takes a slot for {@code host}: at once if one is free and no other request is waiting for that host,
+     * else after the requests that came first, until the deadline.
+     */
     static void acquire(String host, long deadlineNanos, long timeoutMs) throws IOException {
-        synchronized (IN_FLIGHT) {
-            while (true) {
-                int[] count = IN_FLIGHT.get(host); // looked up again after every wait: it may have been removed
-                if (count == null) {
-                    IN_FLIGHT.put(host, new int[] {1});
-                    return;
-                }
-                if (count[0] < MAX_PER_HOST) {
-                    count[0]++;
-                    return;
-                }
+        SLOT_LOCK.lock();
+        try {
+            Slots slots = SLOTS.get(host);
+            if (slots == null) {
+                slots = new Slots();
+                SLOTS.put(host, slots);
+            }
+            if (slots.waiting.isEmpty() && slots.inFlight < maxPerHost) {
+                slots.inFlight++;
+                return;
+            }
+            // the entry stays in SLOTS while this request waits or holds a slot, so `slots` stays current
+            Waiter me = new Waiter();
+            slots.waiting.addLast(me);
+            while (!me.granted) {
                 long left = deadlineNanos - System.nanoTime();
                 if (left <= 0) {
+                    slots.waiting.remove(me);
+                    dropIfIdle(host, slots);
                     SocketTimeoutException timeout = new SocketTimeoutException("no free slot within " + timeoutMs + " ms");
-                    throw new RequestNotSentException("Too many requests in flight to " + host + " (" + MAX_PER_HOST
-                            + "); none finished within " + timeoutMs + " ms", timeout);
+                    throw new RequestNotSentException("Too many requests in flight to " + host + " (limit " + maxPerHost
+                            + "); no slot came free for this request within " + timeoutMs + " ms", timeout);
                 }
                 try {
-                    TimeUnit.NANOSECONDS.timedWait(IN_FLIGHT, left);
+                    me.turn.awaitNanos(left);
                 } catch (InterruptedException e) {
+                    if (me.granted) {
+                        giveBack(host, slots); // given a slot just as the interrupt came: pass it on
+                    } else {
+                        slots.waiting.remove(me);
+                        dropIfIdle(host, slots);
+                    }
                     Thread.currentThread().interrupt();
                     throw new InterruptedIOException("Interrupted while waiting for a free slot to " + host);
                 }
             }
+        } finally {
+            SLOT_LOCK.unlock();
         }
     }
 
+    /** Gives back a slot taken by {@link #acquire}; it goes to the request that has waited longest, if any. */
     static void release(String host) {
-        synchronized (IN_FLIGHT) {
-            int[] count = IN_FLIGHT.get(host);
-            if (count != null && --count[0] <= 0) {
-                IN_FLIGHT.remove(host);
+        SLOT_LOCK.lock();
+        try {
+            Slots slots = SLOTS.get(host);
+            if (slots != null) {
+                giveBack(host, slots);
             }
-            IN_FLIGHT.notifyAll();
+        } finally {
+            SLOT_LOCK.unlock();
+        }
+    }
+
+    private static void giveBack(String host, Slots slots) {
+        if (slots.inFlight > 0) {
+            slots.inFlight--;
+        }
+        handOut(slots);
+        dropIfIdle(host, slots);
+    }
+
+    /** Hands free slots to the waiting requests in the order they came, waking only those. Under SLOT_LOCK. */
+    private static void handOut(Slots slots) {
+        while (slots.inFlight < maxPerHost && !slots.waiting.isEmpty()) {
+            Waiter next = slots.waiting.pollFirst();
+            next.granted = true;
+            slots.inFlight++;
+            next.turn.signal();
+        }
+    }
+
+    private static void dropIfIdle(String host, Slots slots) {
+        if (slots.idle()) {
+            SLOTS.remove(host);
         }
     }
 
     /** Requests in flight to {@code host:port} in this JVM; for tests. */
     static int inFlight(String hostAndPort) {
-        synchronized (IN_FLIGHT) {
-            int[] count = IN_FLIGHT.get(hostAndPort);
-            return count == null ? 0 : count[0];
+        SLOT_LOCK.lock();
+        try {
+            Slots slots = SLOTS.get(hostAndPort);
+            return slots == null ? 0 : slots.inFlight;
+        } finally {
+            SLOT_LOCK.unlock();
+        }
+    }
+
+    /** Requests waiting for a slot to {@code host:port} in this JVM; for tests. */
+    static int waiting(String hostAndPort) {
+        SLOT_LOCK.lock();
+        try {
+            Slots slots = SLOTS.get(hostAndPort);
+            return slots == null ? 0 : slots.waiting.size();
+        } finally {
+            SLOT_LOCK.unlock();
         }
     }
 
     /** True while {@code host:port} has an entry in the in-flight table; for tests. */
     static boolean tracked(String hostAndPort) {
-        synchronized (IN_FLIGHT) {
-            return IN_FLIGHT.containsKey(hostAndPort);
+        SLOT_LOCK.lock();
+        try {
+            return SLOTS.containsKey(hostAndPort);
+        } finally {
+            SLOT_LOCK.unlock();
         }
     }
 
